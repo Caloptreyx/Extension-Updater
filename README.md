@@ -28,7 +28,7 @@ updater only notifies: list, release notes and download links, no install button
 ## How it finds our extensions
 
 - One API request lists the repositories of the Caloptreyx organisation (`GET /orgs/Caloptreyx/repos`,
-  refreshed daily).
+  refreshed daily, and by **Check now** when the list is older than 10 minutes).
 - For each public repository that is not a fork, `Metadata.toml` on the default branch is read from
   raw.githubusercontent.com (outside the API quota). A repository whose package name is
   `dev.caloptreyx.*` or `com.caloptreyx.*` maps to that package; other packages are ignored.

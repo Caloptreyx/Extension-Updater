@@ -31,8 +31,9 @@ use tokio::sync::{Mutex, RwLock};
 const REPOS_KEY: &str = "repos";
 const LAST_CHECK_KEY: &str = "state:last-check";
 const LAST_AUTO_KEY: &str = "state:last-auto";
-/// How often the repository list is read again.
-const REPOS_MAX_AGE_HOURS: i64 = 24;
+/// How often the repository list is read again (one API request), and on "Check now".
+const REPOS_MAX_AGE_MINUTES: i64 = 24 * 60;
+const REPOS_MANUAL_MAX_AGE_MINUTES: i64 = 10;
 /// Release tags whose `Metadata.toml` is read, newest first per repository.
 const TAGS_PER_REPO: usize = 10;
 /// The shortest time between two manual checks.
@@ -105,11 +106,15 @@ pub async fn check(state: &State, mode: Mode) -> anyhow::Result<Arc<Snapshot>> {
     let mut errors = Vec::new();
     let db = &state.database;
 
-    // the organization's repositories, once a day
+    // the organization's repositories, once a day (new extension repositories show up on "Check now")
     let cached_repos = store::cache_get(db, REPOS_KEY).await?;
+    let max_age = if mode == Mode::Manual {
+        REPOS_MANUAL_MAX_AGE_MINUTES
+    } else {
+        REPOS_MAX_AGE_MINUTES
+    };
     let fresh = cached_repos.as_ref().is_some_and(|c| {
-        (Utc::now() - c.updated).num_hours() < REPOS_MAX_AGE_HOURS
-            || (offline && !c.value.is_empty())
+        (Utc::now() - c.updated).num_minutes() < max_age || (offline && !c.value.is_empty())
     });
     let repos: Vec<Repo> = match (&cached_repos, fresh) {
         (Some(cached), true) => serde_json::from_str(&cached.value).unwrap_or_default(),
