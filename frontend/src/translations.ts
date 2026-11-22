@@ -1,0 +1,143 @@
+import { defineTranslations } from 'shared';
+
+const translations = defineTranslations({
+  items: {},
+  translations: {
+    title: 'Extension Updates',
+    subtitle: 'Caloptreyx extensions and their GitHub releases.',
+    actions: {
+      checkNow: 'Check now',
+      updateAll: 'Update all ({count})',
+      update: 'Update',
+      install: 'Install',
+      rollback: 'Roll back to {version}',
+      download: 'Download',
+      github: 'GitHub',
+      release: 'Release',
+      viewLog: 'View build log',
+      retry: 'Retry',
+      started: 'Update started. The panel rebuilds and restarts when it is done.',
+      checked: 'Check finished.',
+    },
+    status: {
+      lastChecked: 'Last checked:',
+      neverChecked: 'Not checked yet.',
+      checking: 'Checking GitHub…',
+      panelVersion: 'Panel {version}',
+      rateLimit: 'GitHub API: {remaining} of {limit} requests left, resets {time}.',
+      restarting: 'Panel restarting… This page reconnects by itself.',
+    },
+    management: {
+      notifyOnly: 'Notify only',
+      notHeavy:
+        'This panel does not run the heavy image, so extensions cannot be installed from here. Download the archives and upload them on the Extensions page.',
+      disabled:
+        'Extension management is disabled on this panel (APP_DISABLE_EXTENSION_MANAGEMENT). Updates are only listed.',
+      noPermission: 'Installing updates needs the extensions.manage permission.',
+    },
+    errors: {
+      title: 'The last check had problems',
+      rateLimited: 'GitHub rate limit reached',
+      rateLimitedContent: 'No GitHub API requests until {time}.',
+      tokenHint: 'Add a GitHub token in the settings below to raise the limit to 5000 requests per hour.',
+      load: 'The overview could not be loaded: {error}',
+    },
+    build: {
+      title: 'Build in progress',
+      waiting: 'Waiting for the build to start…',
+      items: 'Installing: {items}',
+      hint: 'The panel keeps running until the new build is ready, then restarts.',
+    },
+    run: {
+      automatic: 'Automatic update',
+      succeeded: 'Update finished',
+      succeededRollback: 'Rollback finished',
+      updated: 'Updated {name} to {version}.',
+      installed: 'Installed {name} {version}.',
+      rolledBack: 'Rolled {name} back to {version}.',
+      failed: 'Update failed',
+      failedRollback: 'Rollback failed',
+      failedExtensions: 'Failed extensions: {extensions}',
+      restored: 'The previous versions were put back; the running panel is unchanged.',
+      unknown: 'Update outcome unknown',
+      unknownContent: 'The panel could not tell whether the last run was applied. Check the versions below.',
+    },
+    list: {
+      installed: 'Installed',
+      notInstalled: 'Not installed',
+      none: 'No Caloptreyx extension is installed.',
+      noneAvailable: 'Every published Caloptreyx extension is installed.',
+      name: 'Extension',
+      version: 'Installed',
+      latest: 'Latest compatible',
+      state: 'Status',
+      self: 'This updater',
+      prerelease: 'Pre-release',
+      unverifiedHint: 'No SHA-256 is published for {version}, so it cannot be installed.',
+      needsPanelHint: '{version} needs panel {range}.',
+      notes: 'Release notes ({count})',
+      hideNotes: 'Hide release notes',
+      noNotes: 'No release notes.',
+      published: 'Published',
+    },
+    badge: {
+      up_to_date: 'Up to date',
+      update_available: 'Update available',
+      installable: 'Available',
+      needs_panel: 'Needs panel {version}',
+      unverified: 'Unverified',
+      license: 'License',
+      no_release: 'No release',
+      unpublished: 'Unpublished',
+      disabled: 'Disabled',
+      archived: 'Archived',
+    },
+    license: {
+      title: 'Licenses',
+      content: 'These extensions ask you to accept their license before they are installed.',
+      accept: 'Accept and install',
+    },
+    rollback: {
+      title: 'Roll Back',
+      content:
+        'Put {name} {version} back? The panel rebuilds once; the current version is kept, so you can roll forward again.',
+    },
+    banner: {
+      title: 'Extension updates available',
+      content: '{list}',
+      more: '{list} and {count} more',
+      open: 'View updates',
+      dismiss: 'Dismiss',
+    },
+    card: {
+      title: 'Caloptreyx Extensions',
+      updates: 'Updates available: {count}',
+      none: 'All Caloptreyx extensions are up to date.',
+      open: 'Open Extension Updates',
+    },
+    settings: {
+      title: 'Updater Settings',
+      interval: 'Hours between checks',
+      prereleases: 'Offer pre-releases',
+      autoUpdate: 'Install updates automatically',
+      autoUpdateDescription:
+        'Once a day, in one rebuild: verified updates without a license that fit this panel. A version whose build failed is not retried.',
+      autoUpdateHour: 'Hour of the automatic update',
+      autoUpdateHourDescription: 'In the panel time zone, 0-23.',
+      banner: 'Show a banner on admin pages when updates are available',
+      token: 'GitHub token',
+      tokenDescription: 'Optional, no scopes needed. Raises the API limit from 60 to 5000 requests per hour.',
+      tokenStored: 'Stored: …{hint}. Leave empty to keep it.',
+      tokenStoredNoHint: 'A token is stored. Leave empty to keep it.',
+      tokenNone: 'No token stored.',
+      removeToken: 'Remove the stored token',
+      save: 'Save',
+      saved: 'Settings saved.',
+    },
+  },
+});
+
+export const useExtTranslations = translations.useTranslations.bind(translations);
+export const getExtTranslations = translations.getTranslations.bind(translations);
+
+export default translations;
