@@ -23,7 +23,9 @@ export const getSummary = async (): Promise<Summary> => (await axiosInstance.get
 /** Checks GitHub now (throttled by the backend) and returns the fresh overview. */
 export const checkNow = async (): Promise<Overview> => (await axiosInstance.post(`${ADMIN_BASE}/check`)).data;
 
-export type UpdateResult = { type: 'started'; started: RunStarted } | { type: 'needs_license'; licenses: LicenseNeeded[] };
+export type UpdateResult =
+  | { type: 'started'; started: RunStarted }
+  | { type: 'needs_license'; licenses: LicenseNeeded[] };
 
 /** Installs the given releases in one rebuild; a 409 lists the licenses to accept first. */
 export const startUpdate = async (request: UpdateRequest): Promise<UpdateResult> => {

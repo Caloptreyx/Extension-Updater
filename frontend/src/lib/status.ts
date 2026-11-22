@@ -76,7 +76,9 @@ export function installableEntries(entries: Entry[]): Entry[] {
 }
 
 export function packagesOf(entries: Entry[]): PackageVersion[] {
-  return entries.flatMap((entry) => (entry.latest ? [{ package_name: entry.package_name, version: entry.latest.version }] : []));
+  return entries.flatMap((entry) =>
+    entry.latest ? [{ package_name: entry.package_name, version: entry.latest.version }] : [],
+  );
 }
 
 /** The packages of a run, to send again with `force` ("Retry"). */

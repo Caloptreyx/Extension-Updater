@@ -13,12 +13,14 @@ const TAG = /<\/?[a-zA-Z][^>]*>|<[!?][^>]*>/g;
 const AUTOLINK = /<((?:https?:\/\/|mailto:)[^\s<>]+)>/gi;
 const TAG_START = /<(?=[a-zA-Z!?/])/g;
 const IMAGE = /!\[((?:[^[\]]|\[[^[\]]*\])*)\]/g;
-const LINK =
-  /\[((?:[^[\]]|\[[^[\]]*\])*)\]\(\s*(<[^>\n]*>|[^\s)]*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?\s*\)/g;
+const LINK = /\[((?:[^[\]]|\[[^[\]]*\])*)\]\(\s*(<[^>\n]*>|[^\s)]*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?\s*\)/g;
 const DEFINITION = /^ {0,3}\[[^\]\n]+\]:[ \t]*(<[^>\n]*>|\S+).*$/gm;
+/** Any remaining `](target)`, including ones the link pattern does not parse. */
+const TARGET = /\]\(([^)\n]*)\)/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const INLINE_CODE = /(?<![`\\])(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
-const PLACEHOLDER = /\u0000(\d+)\u0000/g;
+/** Stands in for an inline code span while markup is removed; a private-use character. */
+const PLACEHOLDER = /\uE000(\d+)\uE000/g;
 
 const NAMED_ENTITIES: Record<string, string> = {
   colon: ':',
@@ -40,6 +42,7 @@ export function isSafeUrl(raw: string): boolean {
     .replace(/&([a-z]+);/gi, (entity, name: string) => NAMED_ENTITIES[name.toLowerCase()] ?? entity)
     .replace(/\\/g, '')
     // browsers drop whitespace and control characters inside a scheme
+    // oxlint-disable-next-line no-control-regex -- matching control characters is the point
     .replace(/[\u0000-\u0020\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\ufeff]/g, '')
     .toLowerCase();
 
@@ -50,8 +53,8 @@ export function isSafeUrl(raw: string): boolean {
 /** Drops raw HTML from prose; inline code spans stay as written. */
 function stripHtml(text: string): string {
   const spans: string[] = [];
-  let out = text.replace(INLINE_CODE, (span) => `\u0000${spans.push(span) - 1}\u0000`);
-  for (let previous = ''; previous !== out; ) {
+  let out = text.replace(INLINE_CODE, (span) => `\uE000${spans.push(span) - 1}\uE000`);
+  for (let previous = ''; previous !== out;) {
     previous = out;
     out = out
       .replace(COMMENT, '')
@@ -68,6 +71,7 @@ function stripUnsafeLinks(text: string): string {
   return text
     .replace(IMAGE, (_, alt: string) => `[${alt.trim() || 'image'}]`)
     .replace(LINK, (link, label: string, url: string) => (isSafeUrl(url) ? link : label))
+    .replace(TARGET, (target, url: string) => (isSafeUrl(url) ? target : ']'))
     .replace(DEFINITION, (line, url: string) => (isSafeUrl(url) ? line : ''));
 }
 
@@ -78,7 +82,7 @@ function stripUnsafeLinks(text: string): string {
  * the renderer shows them as text.
  */
 export function sanitizeReleaseNotes(md: string): string {
-  let input = md.replace(/\r\n?/g, '\n').replace(/\u0000/g, '');
+  let input = md.replace(/\r\n?/g, '\n').replace(/\uE000/g, '');
   const truncated = input.length > MAX_NOTES_LENGTH;
   if (truncated) input = input.slice(0, MAX_NOTES_LENGTH);
 

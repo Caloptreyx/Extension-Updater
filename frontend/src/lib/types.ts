@@ -1,7 +1,13 @@
 // Payloads of the updater's admin API. The backend serializes with serde and the panel's axios
 // instance does not rename keys, so they keep their snake_case names.
 
-export type EntryStatus = 'up_to_date' | 'update_available' | 'needs_panel' | 'installable' | 'no_release' | 'unpublished';
+export type EntryStatus =
+  | 'up_to_date'
+  | 'update_available'
+  | 'needs_panel'
+  | 'installable'
+  | 'no_release'
+  | 'unpublished';
 
 export interface Asset {
   name: string;
@@ -84,7 +90,9 @@ export type BuildPhase =
     }
   | { type: 'adding'; done: number; total: number };
 
-export type SupervisorState = { type: 'idle' | 'queued' | 'succeeded' | 'failed' } | { type: 'building'; phase: BuildPhase };
+export type SupervisorState =
+  | { type: 'idle' | 'queued' | 'succeeded' | 'failed' }
+  | { type: 'building'; phase: BuildPhase };
 
 export interface SupervisorStatus {
   state: SupervisorState;
