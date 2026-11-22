@@ -9,9 +9,9 @@ Package name: `dev.caloptreyx.updater` · Requires panel `>=1.2.10`
 
 ## Features
 
-- **Admin → Extensions → Extension Updater**: every Caloptreyx extension, installed ones first,
-  with installed and latest version, status, release notes since the installed version and a link
-  to the repository.
+- **Admin › Extension Updates** (sidebar, System; `/admin/extension-updates`): every Caloptreyx
+  extension, installed ones first, with installed and latest version, status, release notes since
+  the installed version and links to the release, the archive and the repository.
 - **Install and update** one or several extensions in a single rebuild, with build progress and
   the build log.
 - **Roll back** to the previously installed version.
@@ -100,7 +100,10 @@ unverified releases. A version whose run failed is not tried again automatically
 
 Before an update, the installed archive is kept in the database, one per extension. **Roll back to
 <version>** swaps it back in with one rebuild; the newer archive is kept in turn, so you can roll
-forward again. It is cheap: one archive per extension, no download.
+forward again. It is cheap: one archive per extension, no download, and the supervisor keeps the
+last three builds, so going back to the build that ran before usually only restarts the panel.
+When a rebuild fails, the kept archives are put back on their own (no rebuild, no restart needed:
+the running panel never changed).
 
 ## Self-update
 

@@ -59,25 +59,40 @@ impl Extension for ExtensionStruct {
     }
 
     /// The panel's own update page asks every extension; the updater answers for itself from its
-    /// last check, without asking GitHub again.
+    /// last check, without asking GitHub again. The panel calls this while it holds the read
+    /// guard of its extension list and may queue a writer on it during startup, so this must not
+    /// touch `state.extensions` (a second read would wait behind that writer: a deadlock) nor
+    /// the supervisor: only the snapshot and the running panel version.
     async fn check_for_updates(
         &self,
-        state: State,
+        _state: State,
         current_version: &semver::Version,
     ) -> Result<Option<ExtensionUpdateInfo>, anyhow::Error> {
         let snapshot = updater::snapshot().await;
-        let entries = updater::entries(&state, &snapshot).await;
-        let Some(latest) = entries
-            .into_iter()
-            .find(|entry| entry.package_name == PACKAGE)
-            .and_then(|entry| entry.latest)
+        let Some(listing) = snapshot.packages.get(PACKAGE) else {
+            return Ok(None);
+        };
+        let releases = snapshot
+            .releases
+            .get(&listing.repo)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let found = catalog::candidates(
+            PACKAGE,
+            &listing.repo,
+            releases,
+            &snapshot.metas,
+            snapshot.allow_prereleases,
+        );
+        let target = shared::extensions::distr::running_panel_version();
+        let Some(latest) = catalog::select(&found, &target, Some(current_version)).compatible
         else {
             return Ok(None);
         };
-        let version = semver::Version::parse(&latest.version)?;
-        Ok((version > *current_version).then(|| ExtensionUpdateInfo {
-            version,
+        Ok((latest.version > *current_version).then(|| ExtensionUpdateInfo {
+            version: latest.version.clone(),
             changes: latest
+                .release
                 .body
                 .lines()
                 .filter(|line| !line.trim().is_empty())
