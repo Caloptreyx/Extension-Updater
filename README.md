@@ -17,6 +17,9 @@ Package name: `dev.caloptreyx.updater` · Requires panel `>=1.2.10`
 - **Roll back** to the previously installed version.
 - **Check now** besides the scheduled check.
 - **Auto-update** at a set hour (off by default).
+- **Updates switch** per extension (on by default): when off, the extension is never counted as
+  an update, skipped by **Update all** and auto-update, and cannot be installed; the newest release
+  is still shown. Roll back still works. Works on notify-only panels too.
 - **Notices**: a banner on admin pages and a card on Admin › Updates when updates are available.
 
 ## Requirements
@@ -127,10 +130,14 @@ For the token, use a fine-grained token with public repository read access only.
 | Action | Needs |
 |---|---|
 | View the list, **Check now** | `extensions.read` |
-| Install, update, roll back, change settings | `extensions.manage` |
+| Install, update, roll back, change settings, the **Updates** switch | `extensions.manage` |
 
 The same permissions as the panel's own extension upload. Activity log: `extension:upload` per
-archive (with `via: dev.caloptreyx.updater` and the release tag) and `extension:rebuild`.
+archive (with `via: dev.caloptreyx.updater` and the release tag), `extension:rebuild`, and
+`extension:updates` for the **Updates** switch (`package_name`, `enabled`).
+
+The switch is also available as `PUT /api/admin/extensions/dev.caloptreyx.updater/updates` with
+`{ "package_name": "...", "enabled": true }`.
 
 ## Notices
 
@@ -148,8 +155,8 @@ When updates are available, a banner shows on every admin page (setting) and a c
 
 ## Development
 
-Crate at the repository root (`src/`), frontend in `frontend/`, migrations in `migrations/`, node
-tests in `tests/`.
+Crate at the repository root (`src/`), frontend in `frontend/`, migrations in `migrations/` (four
+tables prefixed `dev_caloptreyx_updater_`), node tests in `tests/`.
 
 - Light checks: symlink the repository into `/root/calagopus-dev` (the panel source) as an
   extension, then run `tsc`, `oxlint` and `oxfmt` in its `frontend/`, and `node --test tests/` here.

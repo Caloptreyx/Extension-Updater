@@ -10,7 +10,8 @@ export type BadgeKind =
   | 'no_release'
   | 'unpublished'
   | 'disabled'
-  | 'archived';
+  | 'archived'
+  | 'updates_off';
 
 export interface StatusBadge {
   kind: BadgeKind;
@@ -28,20 +29,28 @@ const COLORS: Record<BadgeKind, string> = {
   unpublished: 'gray',
   disabled: 'gray',
   archived: 'gray',
+  updates_off: 'gray',
 };
 
 const badge = (kind: BadgeKind): StatusBadge => ({ kind, color: COLORS[kind] });
 
-/** The release an Update or Install button would install. */
-const offered = (entry: Entry) =>
-  entry.status === 'update_available' || entry.status === 'installable' ? entry.latest : null;
+/** A newer release exists for this panel: installable when updates are on. */
+const hasNewer = (entry: Entry) => entry.status === 'update_available' || entry.status === 'installable';
+
+/** The release an Update or Install button would install; none while the entry's updates are off. */
+export const offered = (entry: Entry) => (entry.updates_enabled && hasNewer(entry) ? entry.latest : null);
+
+/** The newer release an entry has while its updates are off: shown as information, not offered. */
+export const heldBack = (entry: Entry) => (!entry.updates_enabled && hasNewer(entry) ? entry.latest : null);
 
 /** The badges of an entry: its status first, then what else limits it. */
 export function entryBadges(entry: Entry): StatusBadge[] {
   const badges: StatusBadge[] = [];
   const release = offered(entry);
 
-  if (release && !release.verified) {
+  if (heldBack(entry)) {
+    badges.push(badge('updates_off'));
+  } else if (release && !release.verified) {
     badges.push(badge('unverified'));
   } else if (entry.status === 'needs_panel') {
     badges.push(badge('needs_panel'));
@@ -49,6 +58,7 @@ export function entryBadges(entry: Entry): StatusBadge[] {
     badges.push(badge(entry.status));
   }
 
+  if (!entry.updates_enabled && badges[0].kind !== 'updates_off') badges.push(badge('updates_off'));
   if (entry.status !== 'needs_panel' && entry.needs_panel) badges.push(badge('needs_panel'));
   if (release?.license) badges.push(badge('license'));
   if (entry.installed?.disabled) badges.push(badge('disabled'));
@@ -57,7 +67,7 @@ export function entryBadges(entry: Entry): StatusBadge[] {
   return badges;
 }
 
-/** Whether the offered release can be installed: verified, with an archive, and not from an archived repo when new. */
+/** Whether the offered release can be installed: updates on, verified, with an archive, and not from an archived repo when new. */
 export function canInstall(entry: Entry): boolean {
   const release = offered(entry);
   if (!release?.verified || !release.asset) return false;
@@ -65,7 +75,7 @@ export function canInstall(entry: Entry): boolean {
   return !!entry.installed;
 }
 
-/** Installed extensions "Update all" sends. License ones stay in: the license modal asks for them. */
+/** Installed extensions "Update all" sends: not those with updates off. License ones stay in: the license modal asks for them. */
 export function updatableEntries(entries: Entry[]): Entry[] {
   return entries.filter((entry) => entry.status === 'update_available' && canInstall(entry));
 }

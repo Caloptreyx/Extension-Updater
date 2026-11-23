@@ -323,6 +323,16 @@ pub struct Entry {
     pub notes: Vec<ReleaseView>,
     pub rollback: Option<RollbackView>,
     pub is_self: bool,
+    /// Off: never counted as an update, skipped by "Update all" and automatic updates, and no
+    /// release is installed for it. Rolling back still works.
+    pub updates_enabled: bool,
+}
+
+impl Entry {
+    /// An update is offered: installed, a newer compatible release exists and updates are on.
+    pub fn offers_update(&self) -> bool {
+        self.updates_enabled && self.status == Status::UpdateAvailable
+    }
 }
 
 fn release_view(repo: &str, package_name: &str, candidate: &catalog::Candidate) -> ReleaseView {
@@ -349,8 +359,9 @@ fn release_view(repo: &str, package_name: &str, candidate: &catalog::Candidate) 
     }
 }
 
-/// Every one of our extensions: the installed ones and those a repository publishes.
-pub async fn entries(state: &State, snapshot: &Snapshot) -> Vec<Entry> {
+/// Every one of our extensions: the installed ones and those a repository publishes. Fails when
+/// the updates-off list cannot be read, so nothing is offered that an admin turned off.
+pub async fn entries(state: &State, snapshot: &Snapshot) -> anyhow::Result<Vec<Entry>> {
     let running = panel::running(state).await;
     let target = panel::target_version(state).await;
     let kept: BTreeMap<String, String> = store::backup_versions(&state.database)
@@ -358,6 +369,7 @@ pub async fn entries(state: &State, snapshot: &Snapshot) -> Vec<Entry> {
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let updates_off = store::updates_off(&state.database).await?;
     let mut names: BTreeSet<&str> = running
         .keys()
         .map(String::as_str)
@@ -446,13 +458,14 @@ pub async fn entries(state: &State, snapshot: &Snapshot) -> Vec<Entry> {
                         version: version.clone(),
                     }),
                 is_self: package_name == crate::PACKAGE,
+                updates_enabled: !updates_off.contains(package_name),
             }
         })
         .collect();
     entries.sort_by(|a, b| {
         (a.installed.is_none(), a.name.to_lowercase()).cmp(&(b.installed.is_none(), b.name.to_lowercase()))
     });
-    entries
+    Ok(entries)
 }
 
 #[derive(Serialize)]
@@ -485,7 +498,7 @@ pub async fn overview(state: &State, can_manage: bool) -> anyhow::Result<Overvie
         check_errors: snapshot.errors.clone(),
         rate_limit: github::rate_limit(),
         settings: settings.admin_view(),
-        extensions: entries(state, &snapshot).await,
+        extensions: entries(state, &snapshot).await?,
         supervisor: if can_manage {
             panel::supervisor(state).await
         } else {
@@ -510,13 +523,12 @@ pub struct Summary {
     pub updates: Vec<SummaryItem>,
 }
 
-pub async fn summary(state: &State) -> anyhow::Result<Summary> {
-    let snapshot = snapshot().await;
-    let settings = settings::load(state).await?;
-    let updates = entries(state, &snapshot)
-        .await
+/// What the banner and the Admin › Updates card count: offered updates, without the extensions
+/// whose updates are off.
+fn summary_items(entries: Vec<Entry>) -> Vec<SummaryItem> {
+    entries
         .into_iter()
-        .filter(|entry| entry.status == Status::UpdateAvailable)
+        .filter(Entry::offers_update)
         .filter_map(|entry| {
             Some(SummaryItem {
                 from: entry.installed?.version,
@@ -525,11 +537,16 @@ pub async fn summary(state: &State) -> anyhow::Result<Summary> {
                 name: entry.name,
             })
         })
-        .collect();
+        .collect()
+}
+
+pub async fn summary(state: &State) -> anyhow::Result<Summary> {
+    let snapshot = snapshot().await;
+    let settings = settings::load(state).await?;
     Ok(Summary {
         show_banner: settings.show_banner,
         building: !store::runs_open(&state.database).await?.is_empty(),
-        updates,
+        updates: summary_items(entries(state, &snapshot).await?),
     })
 }
 
@@ -652,6 +669,12 @@ fn plans_for(
             .iter()
             .find(|e| e.package_name == want.package_name)
             .ok_or_else(|| RunError::Invalid(format!("{} is not a Caloptreyx extension", want.package_name)))?;
+        if !entry.updates_enabled {
+            return Err(RunError::Invalid(format!(
+                "updates are off for {}; turn them on to install a release",
+                entry.name
+            )));
+        }
         let (Some(latest), Some(repo)) = (&entry.latest, &entry.repo) else {
             return Err(RunError::Invalid(format!("{} has no release for this panel", entry.name)));
         };
@@ -742,7 +765,7 @@ pub async fn update(
     };
     ensure_idle(state).await?;
     let snapshot = snapshot().await;
-    let entries = entries(state, &snapshot).await;
+    let entries = entries(state, &snapshot).await?;
     let accept: BTreeSet<String> = accept_licenses.iter().cloned().collect();
     let (mut plans, items, published) = plans_for(&snapshot, &entries, wanted, &accept)?;
 
@@ -810,6 +833,31 @@ pub async fn rollback(state: &State, actor: &Actor, package_name: &str) -> Resul
         github: Github::new(&settings.github_token),
     };
     start(state, actor, &host, &plans, items, RunKind::Rollback, false, false).await
+}
+
+/// Turns the updates of one of our extensions on or off, and logs it.
+pub async fn set_updates(
+    state: &State,
+    actor: &Actor,
+    package_name: &str,
+    enabled: bool,
+) -> Result<(), RunError> {
+    if !catalog::is_ours(package_name) {
+        return Err(RunError::Invalid(format!("{package_name} is not a Caloptreyx extension")));
+    }
+    store::set_updates(&state.database, package_name, enabled, actor.user_uuid).await?;
+    actor
+        .log(
+            state,
+            "extension:updates",
+            serde_json::json!({
+                "package_name": package_name,
+                "enabled": enabled,
+                "via": crate::PACKAGE,
+            }),
+        )
+        .await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -890,20 +938,12 @@ async fn start(
     Ok(Started { run, build_id })
 }
 
-/// Installs what automatic updates may install: offered updates that are verified, carry no
-/// license and fit this panel, except versions whose run failed before.
-async fn auto_update(state: &State) -> anyhow::Result<()> {
-    let snapshot = check(state, Mode::Scheduled).await?;
-    let failed: BTreeSet<(String, String)> = store::runs_recent(&state.database, 50)
-        .await?
+/// What automatic updates may install: offered updates (updates on) that are verified, carry no
+/// license and fit this panel, except versions in `failed` (a run of them failed before).
+fn auto_wanted(entries: Vec<Entry>, failed: &BTreeSet<(String, String)>) -> Vec<Wanted> {
+    entries
         .into_iter()
-        .filter(|run| matches!(run.state, RunState::Failed | RunState::Unknown))
-        .flat_map(|run| run.items.into_iter().map(|item| (item.package_name, item.to)))
-        .collect();
-    let wanted: Vec<Wanted> = entries(state, &snapshot)
-        .await
-        .into_iter()
-        .filter(|entry| entry.status == Status::UpdateAvailable)
+        .filter(Entry::offers_update)
         .filter_map(|entry| {
             let latest = entry.latest?;
             (latest.verified
@@ -914,7 +954,18 @@ async fn auto_update(state: &State) -> anyhow::Result<()> {
                 version: latest.version,
             })
         })
+        .collect()
+}
+
+async fn auto_update(state: &State) -> anyhow::Result<()> {
+    let snapshot = check(state, Mode::Scheduled).await?;
+    let failed: BTreeSet<(String, String)> = store::runs_recent(&state.database, 50)
+        .await?
+        .into_iter()
+        .filter(|run| matches!(run.state, RunState::Failed | RunState::Unknown))
+        .flat_map(|run| run.items.into_iter().map(|item| (item.package_name, item.to)))
         .collect();
+    let wanted = auto_wanted(entries(state, &snapshot).await?, &failed);
     if wanted.is_empty() {
         return Ok(());
     }
@@ -978,4 +1029,98 @@ pub async fn background(state: State) -> anyhow::Result<()> {
     let result = tick(&state, first).await;
     tokio::time::sleep(Duration::from_secs(60)).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(version: &str) -> ReleaseView {
+        ReleaseView {
+            tag: format!("v{version}"),
+            version: version.into(),
+            name: None,
+            published_at: None,
+            html_url: String::new(),
+            body: String::new(),
+            prerelease: false,
+            panel_version: ">=1.2.10".into(),
+            license: None,
+            verified: true,
+            asset: None,
+        }
+    }
+
+    fn entry(name: &str, status: Status, updates_enabled: bool) -> Entry {
+        Entry {
+            package_name: format!("dev.caloptreyx.{name}"),
+            name: name.into(),
+            repo: Some(name.into()),
+            repo_url: None,
+            archived: false,
+            installed: (status != Status::Installable).then(|| InstalledView {
+                version: "1.0.0".into(),
+                disabled: false,
+            }),
+            status,
+            latest: Some(release("1.1.0")),
+            needs_panel: None,
+            notes: Vec::new(),
+            rollback: None,
+            is_self: false,
+            updates_enabled,
+        }
+    }
+
+    fn entries() -> Vec<Entry> {
+        vec![
+            entry("on", Status::UpdateAvailable, true),
+            entry("off", Status::UpdateAvailable, false),
+            entry("current", Status::UpToDate, true),
+            entry("new", Status::Installable, true),
+        ]
+    }
+
+    #[test]
+    fn updates_off_are_not_counted() {
+        let counted: Vec<String> = summary_items(entries())
+            .into_iter()
+            .map(|item| item.package_name)
+            .collect();
+        assert_eq!(counted, ["dev.caloptreyx.on"]);
+    }
+
+    #[test]
+    fn automatic_updates_skip_updates_off() {
+        let wanted: Vec<String> = auto_wanted(entries(), &BTreeSet::new())
+            .into_iter()
+            .map(|want| want.package_name)
+            .collect();
+        assert_eq!(wanted, ["dev.caloptreyx.on"]);
+    }
+
+    #[test]
+    fn installing_is_refused_while_updates_are_off() {
+        let entries = entries();
+        let want = |name: &str| Wanted {
+            package_name: format!("dev.caloptreyx.{name}"),
+            version: "1.1.0".into(),
+        };
+        let snapshot = Snapshot::default();
+        let accept = BTreeSet::new();
+
+        // a request for it (a stale "Update all", an API call) is refused
+        let Err(RunError::Invalid(message)) = plans_for(&snapshot, &entries, &[want("off")], &accept)
+        else {
+            panic!("an extension with updates off was planned");
+        };
+        assert_eq!(message, "updates are off for off; turn them on to install a release");
+
+        // with updates on, it gets past that check (here: no release in the snapshot)
+        let Err(RunError::Invalid(message)) = plans_for(&snapshot, &entries, &[want("on")], &accept)
+        else {
+            panic!("planned without a release");
+        };
+        assert!(message.contains("is gone"), "{message}");
+    }
 }

@@ -6,9 +6,11 @@ import {
   bannerDismissKey,
   canInstall,
   entryBadges,
+  heldBack,
   installableEntries,
   isBuilding,
   lastFinishedRun,
+  offered,
   packagesOf,
   retryPackages,
   updatableEntries,
@@ -42,6 +44,7 @@ const entry = (name: string, patch: Partial<Entry> = {}): Entry => ({
   notes: [],
   rollback: null,
   is_self: false,
+  updates_enabled: true,
   ...patch,
 });
 
@@ -118,9 +121,45 @@ describe('update all', () => {
   });
 });
 
-describe('badges', () => {
-  const kinds = (e: Entry) => entryBadges(e).map((b) => b.kind);
+const kinds = (e: Entry) => entryBadges(e).map((b) => b.kind);
 
+describe('updates off', () => {
+  const off = entry('off', { updates_enabled: false });
+  const entries = [entry('on'), off, entry('offlicensed', { updates_enabled: false, latest: release('2.0.0', { license: 'x' }) })];
+
+  test('update all skips extensions with updates off', () => {
+    assert.deepEqual(
+      updatableEntries(entries).map((e) => e.name),
+      ['on'],
+    );
+    assert.deepEqual(packagesOf(updatableEntries(entries)), [{ package_name: 'dev.caloptreyx.on', version: '1.1.0' }]);
+  });
+
+  test('no Update or Install button, the newer release stays visible', () => {
+    assert.ok(!canInstall(off));
+    assert.ok(!canInstall(entry('new', { installed: null, status: 'installable', updates_enabled: false })));
+    assert.equal(heldBack(off)?.version, '1.1.0');
+    assert.equal(heldBack(entry('on')), null);
+    assert.equal(offered(off), null);
+  });
+
+  test('the card shows updates off instead of the update', () => {
+    assert.deepEqual(kinds(off), ['updates_off']);
+    assert.deepEqual(kinds(entries[2]), ['updates_off']);
+    assert.deepEqual(kinds(entry('a', { updates_enabled: false, latest: release('1.1.0', { verified: false }) })), [
+      'updates_off',
+    ]);
+    assert.deepEqual(kinds(entry('a', { status: 'up_to_date', updates_enabled: false })), ['up_to_date', 'updates_off']);
+  });
+
+  test('turning updates back on offers the update again', () => {
+    const on = { ...off, updates_enabled: true };
+    assert.ok(canInstall(on));
+    assert.deepEqual(kinds(on), ['update_available']);
+  });
+});
+
+describe('badges', () => {
   test('status first, then limits', () => {
     assert.deepEqual(kinds(entry('a')), ['update_available']);
     assert.deepEqual(kinds(entry('a', { latest: release('1.1.0', { verified: false }) })), ['unverified']);

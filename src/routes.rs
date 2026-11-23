@@ -1,16 +1,16 @@
 //! The admin API, mounted at `/api/admin/extensions/dev.caloptreyx.updater`. Viewing and
-//! "Check now" need `extensions.read`; installing, rolling back and changing settings need
-//! `extensions.manage`, like the panel's own extension upload.
+//! "Check now" need `extensions.read`; installing, rolling back, turning an extension's updates
+//! on or off and changing settings need `extensions.manage`, like the panel's own extension upload.
 
 use crate::{
     settings::{self, Settings, Update},
-    updater::{self, Actor, Mode, RunError, Started, Wanted},
+    updater::{self, Actor, Mode, RunError, Wanted},
 };
 use axum::{
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shared::{
     ApiError, GetState, Payload, State,
@@ -28,9 +28,9 @@ fn actor(logger: &GetAdminActivityLogger) -> Actor {
     }
 }
 
-fn respond(result: Result<Started, RunError>) -> ApiResponseResult {
+fn respond(result: Result<impl Serialize, RunError>) -> ApiResponseResult {
     match result {
-        Ok(started) => ApiResponse::new_serialized(started).ok(),
+        Ok(body) => ApiResponse::new_serialized(body).ok(),
         Err(RunError::Busy(message)) => ApiResponse::error(message)
             .with_status(StatusCode::CONFLICT)
             .ok(),
@@ -113,6 +113,28 @@ async fn rollback(
     respond(updater::rollback(&state, &actor(&activity_logger), &data.package_name).await)
 }
 
+#[derive(Deserialize)]
+struct UpdatesRequest {
+    package_name: String,
+    enabled: bool,
+}
+
+/// Turns an extension's updates on or off. No heavy image needed: on notify-only panels it
+/// still decides what the banner counts.
+async fn set_updates(
+    state: GetState,
+    permissions: GetPermissionManager,
+    activity_logger: GetAdminActivityLogger,
+    Payload(data): Payload<UpdatesRequest>,
+) -> ApiResponseResult {
+    permissions.has_admin_permission("extensions.manage")?;
+    let result =
+        updater::set_updates(&state, &actor(&activity_logger), &data.package_name, data.enabled)
+            .await
+            .map(|()| json!({ "package_name": data.package_name, "updates_enabled": data.enabled }));
+    respond(result)
+}
+
 async fn get_settings(state: GetState, permissions: GetPermissionManager) -> ApiResponseResult {
     permissions.has_admin_permission("extensions.read")?;
     let settings = settings::load(&state).await?;
@@ -166,6 +188,7 @@ pub fn router(state: &State) -> OpenApiRouter<State> {
         .route("/check", post(check))
         .route("/update", post(update))
         .route("/rollback", post(rollback))
+        .route("/updates", put(set_updates))
         .route("/settings", get(get_settings).put(put_settings))
         .with_state(state.clone())
 }

@@ -1,9 +1,10 @@
 //! The updater's tables: cached GitHub answers and scheduling state, the archives kept for
-//! rollback, and update runs.
+//! rollback, update runs, and the extensions whose updates are off.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::database::Database;
+use std::collections::BTreeSet;
 
 pub struct Cached {
     pub etag: Option<String>,
@@ -136,6 +137,50 @@ pub async fn backup_versions(db: &Database) -> Result<Vec<(String, String)>, sql
     )
     .fetch_all(db.read())
     .await
+}
+
+/// The extensions whose updates are off.
+pub async fn updates_off(db: &Database) -> Result<BTreeSet<String>, sqlx::Error> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT package_name FROM dev_caloptreyx_updater_updates_off")
+            .fetch_all(db.read())
+            .await?;
+    Ok(rows.into_iter().map(|(package_name,)| package_name).collect())
+}
+
+pub async fn is_updates_off(db: &Database, package_name: &str) -> Result<bool, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT package_name FROM dev_caloptreyx_updater_updates_off WHERE package_name = $1",
+    )
+    .bind(package_name)
+    .fetch_optional(db.read())
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Turns the updates of `package_name` on or off.
+pub async fn set_updates(
+    db: &Database,
+    package_name: &str,
+    enabled: bool,
+    user_uuid: Option<uuid::Uuid>,
+) -> Result<(), sqlx::Error> {
+    if enabled {
+        sqlx::query("DELETE FROM dev_caloptreyx_updater_updates_off WHERE package_name = $1")
+            .bind(package_name)
+            .execute(db.write())
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO dev_caloptreyx_updater_updates_off (package_name, user_uuid)
+             VALUES ($1, $2) ON CONFLICT (package_name) DO NOTHING",
+        )
+        .bind(package_name)
+        .bind(user_uuid)
+        .execute(db.write())
+        .await?;
+    }
+    Ok(())
 }
 
 /// One extension in a run.

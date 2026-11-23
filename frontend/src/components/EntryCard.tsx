@@ -5,6 +5,7 @@ import { useState } from 'react';
 import Button from '@/elements/buttons/Button.tsx';
 import Badge from '@/elements/data-display/Badge.tsx';
 import Card from '@/elements/data-display/Card.tsx';
+import Switch from '@/elements/input/Switch.tsx';
 import Collapse from '@/elements/layout/Collapse.tsx';
 import Group from '@/elements/layout/Group.tsx';
 import Stack from '@/elements/layout/Stack.tsx';
@@ -13,7 +14,7 @@ import Anchor from '@/elements/typography/Anchor.tsx';
 import Text from '@/elements/typography/Text.tsx';
 import Title from '@/elements/typography/Title.tsx';
 import type { Entry } from '../lib/types.ts';
-import { canInstall, entryBadges, type StatusBadge } from '../lib/status.ts';
+import { canInstall, entryBadges, heldBack, offered as offeredRelease, type StatusBadge } from '../lib/status.ts';
 import { useExtTranslations } from '../translations.ts';
 import ReleaseNotes from './ReleaseNotes.tsx';
 
@@ -21,20 +22,36 @@ interface Props {
   entry: Entry;
   /** Install and rollback buttons are shown. */
   manageable: boolean;
+  /** The Updates switch can be changed (extensions.manage; works without the heavy image too). */
+  canToggle: boolean;
   /** A build runs or another request is pending. */
   locked: boolean;
   loading: boolean;
+  /** The Updates switch's request is pending. */
+  toggling: boolean;
   onInstall: (entry: Entry) => void;
   onRollback: (entry: Entry) => void;
+  onToggleUpdates: (entry: Entry, enabled: boolean) => void;
 }
 
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const;
 
-export default function EntryCard({ entry, manageable, locked, loading, onInstall, onRollback }: Props) {
+export default function EntryCard({
+  entry,
+  manageable,
+  canToggle,
+  locked,
+  loading,
+  toggling,
+  onInstall,
+  onRollback,
+  onToggleUpdates,
+}: Props) {
   const { t } = useExtTranslations();
   const [notesOpen, setNotesOpen] = useState(false);
   const { latest, installed } = entry;
-  const offered = entry.status === 'update_available' || entry.status === 'installable' ? latest : null;
+  const offered = offeredRelease(entry);
+  const held = heldBack(entry);
 
   const badgeLabel = ({ kind }: StatusBadge) => {
     switch (kind) {
@@ -58,6 +75,8 @@ export default function EntryCard({ entry, manageable, locked, loading, onInstal
         return t('badge.disabled', {});
       case 'archived':
         return t('badge.archived', {});
+      case 'updates_off':
+        return t('badge.updates_off', {});
     }
   };
 
@@ -107,6 +126,15 @@ export default function EntryCard({ entry, manageable, locked, loading, onInstal
           </Stack>
 
           <Group gap='xs' className='shrink-0'>
+            {canToggle && (
+              <Switch
+                size='sm'
+                label={entry.updates_enabled ? t('actions.updatesOn', {}) : t('actions.updatesOff', {})}
+                checked={entry.updates_enabled}
+                disabled={toggling}
+                onChange={(event) => onToggleUpdates(entry, event.currentTarget.checked)}
+              />
+            )}
             {manageable && canInstall(entry) && (
               <Button size='xs' loading={loading} disabled={locked} onClick={() => onInstall(entry)}>
                 {installed ? t('actions.update', {}) : t('actions.install', {})}
@@ -129,6 +157,11 @@ export default function EntryCard({ entry, manageable, locked, loading, onInstal
         {offered && !offered.verified && (
           <Text size='sm' c='orange'>
             {t('list.unverifiedHint', { version: offered.version })}
+          </Text>
+        )}
+        {held && (
+          <Text size='sm' c='dimmed'>
+            {t('list.updatesOffHint', { version: held.version })}
           </Text>
         )}
         {entry.needs_panel && (

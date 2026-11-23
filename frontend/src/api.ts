@@ -45,6 +45,11 @@ export const startUpdate = async (request: UpdateRequest): Promise<UpdateResult>
 export const rollback = async (packageName: string): Promise<RunStarted> =>
   (await axiosInstance.post(`${ADMIN_BASE}/rollback`, { package_name: packageName })).data;
 
+/** Turns an extension's updates on or off. */
+export const setUpdates = async (packageName: string, enabled: boolean): Promise<void> => {
+  await axiosInstance.put(`${ADMIN_BASE}/updates`, { package_name: packageName, enabled });
+};
+
 export const getSettings = async (): Promise<Settings> =>
   (await axiosInstance.get(`${ADMIN_BASE}/settings`)).data.settings;
 

@@ -18,6 +18,10 @@ const translations = defineTranslations({
       retry: 'Retry',
       started: 'Update started. The panel rebuilds and restarts when it is done.',
       checked: 'Check finished.',
+      updatesOn: 'Updates on',
+      updatesOff: 'Updates off',
+      updatesTurnedOn: 'Updates turned on for {name}.',
+      updatesTurnedOff: 'Updates turned off for {name}.',
     },
     status: {
       lastChecked: 'Last checked:',
@@ -72,6 +76,8 @@ const translations = defineTranslations({
       self: 'This updater',
       prerelease: 'Pre-release',
       unverifiedHint: 'No SHA-256 is published for {version}, so it cannot be installed.',
+      updatesOffHint:
+        'Updates are off: {version} is not offered, not counted in the banner and not installed by Update all or automatic updates.',
       needsPanelHint: '{version} needs panel {range}.',
       notes: 'Release notes ({count})',
       hideNotes: 'Hide release notes',
@@ -89,6 +95,7 @@ const translations = defineTranslations({
       unpublished: 'Unpublished',
       disabled: 'Disabled',
       archived: 'Archived',
+      updates_off: 'Updates off',
     },
     license: {
       title: 'Licenses',

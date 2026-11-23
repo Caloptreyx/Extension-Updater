@@ -16,6 +16,8 @@
 - Archives only from GitHub release assets, with a published SHA-256 (GitHub digest and/or
   `<asset>.sha256`); unverified releases are refused. Licenses need explicit acceptance.
 - Rollback to the previously installed version of each extension.
+- Per-extension Updates switch (on by default): when off, the extension is not counted as an
+  update, not installed by Update all or auto-update, and its card shows "Updates off".
 - Optional auto-update at a set hour (off by default), admin banner and Admin › Updates card.
 - Optional GitHub token, stored encrypted.
 - Notify only on panels without the heavy image or with extension management disabled.

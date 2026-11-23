@@ -62,12 +62,16 @@ impl Extension for ExtensionStruct {
     /// last check, without asking GitHub again. The panel calls this while it holds the read
     /// guard of its extension list and may queue a writer on it during startup, so this must not
     /// touch `state.extensions` (a second read would wait behind that writer: a deadlock) nor
-    /// the supervisor: only the snapshot and the running panel version.
+    /// the supervisor: only the snapshot, the running panel version and the updater's own
+    /// updates-off row (no update is reported while its updates are off).
     async fn check_for_updates(
         &self,
-        _state: State,
+        state: State,
         current_version: &semver::Version,
     ) -> Result<Option<ExtensionUpdateInfo>, anyhow::Error> {
+        if store::is_updates_off(&state.database, PACKAGE).await? {
+            return Ok(None);
+        }
         let snapshot = updater::snapshot().await;
         let Some(listing) = snapshot.packages.get(PACKAGE) else {
             return Ok(None);

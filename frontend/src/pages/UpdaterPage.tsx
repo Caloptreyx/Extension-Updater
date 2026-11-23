@@ -23,7 +23,7 @@ import BuildLogsModal from '@/pages/admin/extensions/modals/BuildLogsModal.tsx';
 import { useAdminCan } from '@/plugins/usePermissions.ts';
 import { useToast } from '@/providers/ToastProvider.tsx';
 import type { Entry, LicenseNeeded, Overview, UpdateRequest } from '../lib/types.ts';
-import { checkNow, getOverview, PACKAGE, rollback, startUpdate } from '../api.ts';
+import { checkNow, getOverview, PACKAGE, rollback, setUpdates, startUpdate } from '../api.ts';
 import EntryCard from '../components/EntryCard.tsx';
 import LicenseModal from '../components/LicenseModal.tsx';
 import { BuildCard, RunResult } from '../components/RunStatus.tsx';
@@ -60,6 +60,8 @@ export default function UpdaterPage() {
   const [checking, setChecking] = useState(false);
   /** The button whose request is pending: a package name, 'all' or 'retry'. */
   const [pending, setPending] = useState<string | null>(null);
+  /** The package whose Updates switch request is pending. */
+  const [toggling, setToggling] = useState<string | null>(null);
   const [licenses, setLicenses] = useState<{ needed: LicenseNeeded[]; request: UpdateRequest } | null>(null);
   const [rollbackEntry, setRollbackEntry] = useState<Entry | null>(null);
   const [log, setLog] = useState<{ opened: boolean; buildId: number | null }>({ opened: false, buildId: null });
@@ -107,6 +109,17 @@ export default function UpdaterPage() {
   };
 
   const openLog = (buildId: number | null) => setLog({ opened: true, buildId });
+
+  const toggleUpdates = (entry: Entry, enabled: boolean) => {
+    setToggling(entry.package_name);
+    setUpdates(entry.package_name, enabled)
+      .then(async () => {
+        addToast(t(enabled ? 'actions.updatesTurnedOn' : 'actions.updatesTurnedOff', { name: entry.name }), 'success');
+        await refresh();
+      })
+      .catch((error) => addToast(httpErrorToHuman(error), 'error'))
+      .finally(() => setToggling(null));
+  };
 
   const manageable = !!data && data.management.available && data.can_manage;
   const locked = building || pending !== null;
@@ -177,10 +190,13 @@ export default function UpdaterPage() {
               entries={data.extensions.filter((entry) => entry.installed)}
               empty={t('list.none', {})}
               manageable={manageable}
+              canToggle={data.can_manage}
               locked={locked}
               pending={pending}
+              toggling={toggling}
               onInstall={(entry) => run(entry.package_name, packageRequest(entry))}
               onRollback={setRollbackEntry}
+              onToggleUpdates={toggleUpdates}
             />
           </TitleCard>
 
@@ -189,10 +205,13 @@ export default function UpdaterPage() {
               entries={installableEntries(data.extensions)}
               empty={t('list.noneAvailable', {})}
               manageable={manageable}
+              canToggle={data.can_manage}
               locked={locked}
               pending={pending}
+              toggling={toggling}
               onInstall={(entry) => run(entry.package_name, packageRequest(entry))}
               onRollback={setRollbackEntry}
+              onToggleUpdates={toggleUpdates}
             />
           </TitleCard>
 
@@ -255,15 +274,19 @@ function EntryList({
   entries,
   empty,
   pending,
+  toggling,
   ...props
 }: {
   entries: Entry[];
   empty: string;
   manageable: boolean;
+  canToggle: boolean;
   locked: boolean;
   pending: string | null;
+  toggling: string | null;
   onInstall: (entry: Entry) => void;
   onRollback: (entry: Entry) => void;
+  onToggleUpdates: (entry: Entry, enabled: boolean) => void;
 }) {
   if (entries.length === 0) {
     return (
@@ -275,7 +298,13 @@ function EntryList({
   return (
     <Stack gap='sm'>
       {entries.map((entry) => (
-        <EntryCard key={entry.package_name} entry={entry} loading={pending === entry.package_name} {...props} />
+        <EntryCard
+          key={entry.package_name}
+          entry={entry}
+          loading={pending === entry.package_name}
+          toggling={toggling === entry.package_name}
+          {...props}
+        />
       ))}
     </Stack>
   );

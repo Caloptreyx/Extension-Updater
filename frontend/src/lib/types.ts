@@ -49,6 +49,8 @@ export interface Entry {
   notes: Release[];
   rollback: { version: string } | null;
   is_self: boolean;
+  /** Off: no Update or Install button, not counted as an update, skipped by "Update all" and automatic updates. */
+  updates_enabled: boolean;
 }
 
 export interface RunItem {
