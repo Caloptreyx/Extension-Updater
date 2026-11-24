@@ -9,18 +9,22 @@ Package name: `dev.caloptreyx.updater` · Requires panel `>=1.2.10`
 
 ## Features
 
-- **Admin › Extension Updates** (sidebar, System; `/admin/extension-updates`): every Caloptreyx
-  extension, installed ones first, with installed and latest version, status, release notes since
-  the installed version and links to the release, the archive and the repository.
-- **Install and update** one or several extensions in a single rebuild, with build progress and
-  the build log.
+- **Admin › Extension Updates** (sidebar, System; `/admin/extension-updates`): tabbed view with
+  **Installed** (search, status filters, actionable priority sorting), **Available** (with
+  repository descriptions), **History** (recent update & rollback runs), and **Settings**.
+- **Selective batch installs & updates**: pick any combination of installed updates and available
+  extensions to install in a single rebuild, with a pre-update confirmation modal and release notes
+  preview.
+- **Live build progress**: multi-step phase tracker, elapsed timer, and build log modal.
 - **Roll back** to the previously installed version.
-- **Check now** besides the scheduled check.
-- **Auto-update** at a set hour (off by default).
-- **Updates switch** per extension (on by default): when off, the extension is never counted as
-  an update, skipped by **Update all** and auto-update, and cannot be installed; the newest release
-  is still shown. Roll back still works. Works on notify-only panels too.
-- **Notices**: a banner on admin pages and a card on Admin › Updates when updates are available.
+- **Check now** besides the scheduled check, with ETag caching for repository lists and releases.
+- **Auto-update** at a set hour (panel time zone, off by default), with banner and card alerts if
+  an automatic run fails.
+- **Per-extension controls**: pause/resume updates, skip a specific release version (automatically
+  resurfacing on future releases), or manually override with **Install anyway**.
+- **GitHub token test**: verify a new or stored token against `GET /rate_limit` directly in Settings.
+- **Notices**: live building status, failed auto-update alerts, and update availability on admin
+  pages and Admin › Updates.
 
 ## Requirements
 

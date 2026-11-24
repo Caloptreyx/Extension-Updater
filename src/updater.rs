@@ -313,6 +313,7 @@ pub struct RollbackView {
 pub struct Entry {
     pub package_name: String,
     pub name: String,
+    pub description: Option<String>,
     pub repo: Option<String>,
     pub repo_url: Option<String>,
     pub archived: bool,
@@ -323,16 +324,53 @@ pub struct Entry {
     pub notes: Vec<ReleaseView>,
     pub rollback: Option<RollbackView>,
     pub is_self: bool,
-    /// Off: never counted as an update, skipped by "Update all" and automatic updates, and no
-    /// release is installed for it. Rolling back still works.
+    /// Off: never counted as an update, skipped by "Update all" and automatic updates, and
+    /// skipped by normal installs (manual override with `force` still allowed). Rolling back still works.
     pub updates_enabled: bool,
+    /// A specific release version skipped by an admin; hidden until a newer release is published.
+    pub skipped_version: Option<String>,
 }
 
 impl Entry {
-    /// An update is offered: installed, a newer compatible release exists and updates are on.
-    pub fn offers_update(&self) -> bool {
-        self.updates_enabled && self.status == Status::UpdateAvailable
+    /// True when the currently offered `latest` release matches `skipped_version`.
+    pub fn is_latest_skipped(&self) -> bool {
+        matches!(
+            (&self.skipped_version, &self.latest),
+            (Some(skipped), Some(latest)) if skipped == &latest.version
+        )
     }
+
+    /// An update is offered: installed, a newer compatible release exists, updates are on, and
+    /// that specific release version has not been skipped.
+    pub fn offers_update(&self) -> bool {
+        self.updates_enabled && self.status == Status::UpdateAvailable && !self.is_latest_skipped()
+    }
+}
+
+/// Actionable priority order for installed extensions, alphabetical within each bucket;
+/// not-installed extensions follow alphabetically.
+fn sort_key(entry: &Entry) -> (bool, u8, String) {
+    let name = entry.name.to_lowercase();
+    if entry.installed.is_none() {
+        return (true, 0, name);
+    }
+    let bucket = if entry.offers_update() && entry.latest.as_ref().is_some_and(|l| l.verified) {
+        0
+    } else if entry.offers_update() || (entry.updates_enabled && entry.needs_panel.is_some()) {
+        1
+    } else if !entry.updates_enabled || entry.is_latest_skipped() {
+        3
+    } else if entry.status == Status::UpToDate {
+        2
+    } else {
+        4
+    };
+    (false, bucket, name)
+}
+
+/// Human-readable panel time zone (e.g. `UTC (UTC+00:00)` or `CET (UTC+01:00)`).
+pub fn panel_timezone() -> String {
+    chrono::Local::now().format("%Z (UTC%:z)").to_string()
 }
 
 fn release_view(repo: &str, package_name: &str, candidate: &catalog::Candidate) -> ReleaseView {
@@ -370,6 +408,7 @@ pub async fn entries(state: &State, snapshot: &Snapshot) -> anyhow::Result<Vec<E
         .into_iter()
         .collect();
     let updates_off = store::updates_off(&state.database).await?;
+    let skipped = store::skipped_versions(&state.database).await?;
     let mut names: BTreeSet<&str> = running
         .keys()
         .map(String::as_str)
@@ -438,6 +477,7 @@ pub async fn entries(state: &State, snapshot: &Snapshot) -> anyhow::Result<Vec<E
                     .map(|r| r.name.clone())
                     .or_else(|| listing.map(|l| l.name.clone()))
                     .unwrap_or_else(|| package_name.to_string()),
+                description: listing.and_then(|l| l.description.clone()),
                 repo: listing.map(|l| l.repo.clone()),
                 repo_url: listing.map(|l| format!("https://github.com/{}/{}", catalog::ORG, l.repo)),
                 archived: listing.is_some_and(|l| l.archived),
@@ -459,12 +499,11 @@ pub async fn entries(state: &State, snapshot: &Snapshot) -> anyhow::Result<Vec<E
                     }),
                 is_self: package_name == crate::PACKAGE,
                 updates_enabled: !updates_off.contains(package_name),
+                skipped_version: skipped.get(package_name).cloned(),
             }
         })
         .collect();
-    entries.sort_by(|a, b| {
-        (a.installed.is_none(), a.name.to_lowercase()).cmp(&(b.installed.is_none(), b.name.to_lowercase()))
-    });
+    entries.sort_by_key(sort_key);
     Ok(entries)
 }
 
@@ -473,6 +512,7 @@ pub struct Overview {
     pub management: panel::Management,
     pub can_manage: bool,
     pub panel_version: String,
+    pub timezone: String,
     pub checked_at: Option<DateTime<Utc>>,
     pub checking: bool,
     pub check_errors: Vec<String>,
@@ -493,6 +533,7 @@ pub async fn overview(state: &State, can_manage: bool) -> anyhow::Result<Overvie
         management: panel::management(state),
         can_manage,
         panel_version: panel::target_version(state).await.to_string(),
+        timezone: panel_timezone(),
         checked_at: snapshot.checked_at,
         checking: is_checking(),
         check_errors: snapshot.errors.clone(),
@@ -516,15 +557,26 @@ pub struct SummaryItem {
     pub to: String,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct SummaryFailedRun {
+    pub id: i64,
+    pub message: Option<String>,
+    pub failed_extensions: Vec<String>,
+    pub finished: Option<DateTime<Utc>>,
+    pub build_id: Option<i64>,
+}
+
 #[derive(Serialize)]
 pub struct Summary {
     pub show_banner: bool,
     pub building: bool,
+    pub building_items: Vec<String>,
     pub updates: Vec<SummaryItem>,
+    pub last_failed_auto_run: Option<SummaryFailedRun>,
 }
 
 /// What the banner and the Admin › Updates card count: offered updates, without the extensions
-/// whose updates are off.
+/// whose updates are off or whose latest release is skipped.
 fn summary_items(entries: Vec<Entry>) -> Vec<SummaryItem> {
     entries
         .into_iter()
@@ -540,13 +592,41 @@ fn summary_items(entries: Vec<Entry>) -> Vec<SummaryItem> {
         .collect()
 }
 
+/// Populated when the most recent finished run was automatic and failed; cleared once a newer run
+/// succeeds (or is manual).
+fn last_failed_auto(runs: &[Run]) -> Option<SummaryFailedRun> {
+    let newest_finished = runs.iter().find(|run| run.state != RunState::Building)?;
+    (newest_finished.automatic && newest_finished.state == RunState::Failed).then(|| {
+        SummaryFailedRun {
+            id: newest_finished.id,
+            message: newest_finished.message.clone(),
+            failed_extensions: newest_finished.failed_extensions.clone(),
+            finished: newest_finished.finished,
+            build_id: newest_finished.build_id,
+        }
+    })
+}
+
 pub async fn summary(state: &State) -> anyhow::Result<Summary> {
+    if let Err(err) = runs::reconcile(state).await {
+        tracing::warn!("extension updater: following runs: {err:#}");
+    }
     let snapshot = snapshot().await;
     let settings = settings::load(state).await?;
+    let open = store::runs_open(&state.database).await?;
+    let building = !open.is_empty();
+    let building_items = open
+        .iter()
+        .flat_map(|run| &run.items)
+        .map(|item| format!("{} {}", item.name, item.to))
+        .collect();
+    let recent = store::runs_recent(&state.database, 10).await?;
     Ok(Summary {
         show_banner: settings.show_banner,
-        building: !store::runs_open(&state.database).await?.is_empty(),
+        building,
+        building_items,
         updates: summary_items(entries(state, &snapshot).await?),
+        last_failed_auto_run: last_failed_auto(&recent),
     })
 }
 
@@ -654,11 +734,15 @@ struct Published {
 
 /// Plans for `wanted`, from the snapshot: each must be the release currently offered. The plans'
 /// SHA-256 is filled in by [`update`] from what [`Published`] names.
+/// When `force` is false, paused (`!updates_enabled`) and skipped extensions are refused; when
+/// `force` is true (explicit "Install anyway" / "Retry"), they are allowed while still enforcing
+/// allowlist, panel compatibility, SHA-256 verification and license acceptance.
 fn plans_for(
     snapshot: &Snapshot,
     entries: &[Entry],
     wanted: &[Wanted],
     accept: &BTreeSet<String>,
+    force: bool,
 ) -> Result<(Vec<Plan>, Vec<RunItem>, Vec<Published>), RunError> {
     let mut plans = Vec::new();
     let mut items = Vec::new();
@@ -669,10 +753,16 @@ fn plans_for(
             .iter()
             .find(|e| e.package_name == want.package_name)
             .ok_or_else(|| RunError::Invalid(format!("{} is not a Caloptreyx extension", want.package_name)))?;
-        if !entry.updates_enabled {
+        if !force && !entry.updates_enabled {
             return Err(RunError::Invalid(format!(
                 "updates are off for {}; turn them on to install a release",
                 entry.name
+            )));
+        }
+        if !force && entry.skipped_version.as_deref() == Some(want.version.as_str()) {
+            return Err(RunError::Invalid(format!(
+                "{} {} is skipped; clear the skip or install it anyway",
+                entry.name, want.version
             )));
         }
         let (Some(latest), Some(repo)) = (&entry.latest, &entry.repo) else {
@@ -767,7 +857,7 @@ pub async fn update(
     let snapshot = snapshot().await;
     let entries = entries(state, &snapshot).await?;
     let accept: BTreeSet<String> = accept_licenses.iter().cloned().collect();
-    let (mut plans, items, published) = plans_for(&snapshot, &entries, wanted, &accept)?;
+    let (mut plans, items, published) = plans_for(&snapshot, &entries, wanted, &accept, force)?;
 
     let settings = settings::load(state).await?;
     let host = PanelHost {
@@ -860,6 +950,83 @@ pub async fn set_updates(
     Ok(())
 }
 
+/// Sets or clears a skipped release version for one of our extensions, and logs it.
+pub async fn set_skipped_version(
+    state: &State,
+    actor: &Actor,
+    package_name: &str,
+    version: Option<&str>,
+) -> Result<Option<String>, RunError> {
+    if !catalog::is_ours(package_name) {
+        return Err(RunError::Invalid(format!("{package_name} is not a Caloptreyx extension")));
+    }
+    let normalized = match version.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => {
+            Version::parse(v)
+                .map_err(|err| RunError::Invalid(format!("invalid version {v}: {err}")))?;
+            Some(v.to_string())
+        }
+        None => None,
+    };
+    store::set_skipped_version(
+        &state.database,
+        package_name,
+        normalized.as_deref(),
+        actor.user_uuid,
+    )
+    .await?;
+    actor
+        .log(
+            state,
+            "extension:skip",
+            serde_json::json!({
+                "package_name": package_name,
+                "version": normalized,
+                "via": crate::PACKAGE,
+            }),
+        )
+        .await;
+    Ok(normalized)
+}
+
+/// Tests a provided GitHub token without saving it, or the currently stored token when `None`.
+pub async fn test_token(state: &State, provided: Option<&str>) -> Result<github::TokenTest, RunError> {
+    match provided {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(github::TokenTest {
+                    valid: false,
+                    rate_limit: None,
+                    error: Some("No GitHub token provided.".into()),
+                });
+            }
+            if trimmed.len() > 255 || trimmed.chars().any(|c| !c.is_ascii_graphic()) {
+                return Ok(github::TokenTest {
+                    valid: false,
+                    rate_limit: None,
+                    error: Some(
+                        "Token must be printable ASCII and at most 255 characters.".into(),
+                    ),
+                });
+            }
+            Ok(Github::new(trimmed).test_token(false).await)
+        }
+        None => {
+            let settings = settings::load(state).await?;
+            let stored = settings.github_token.trim();
+            if stored.is_empty() {
+                return Ok(github::TokenTest {
+                    valid: false,
+                    rate_limit: None,
+                    error: Some("No GitHub token is currently stored.".into()),
+                });
+            }
+            Ok(Github::new(stored).test_token(true).await)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start(
     state: &State,
@@ -900,6 +1067,19 @@ async fn start(
         Rebuild::Queued { behind } => (None, Some(behind)),
     };
     store::run_set_build(&state.database, id, build_id, after).await?;
+
+    if kind == RunKind::Update && !automatic {
+        for item in &items {
+            if let Err(err) =
+                store::clear_skipped_version_if(&state.database, &item.package_name, &item.to).await
+            {
+                tracing::warn!(
+                    "extension updater: clearing skipped version for {}: {err}",
+                    item.package_name
+                );
+            }
+        }
+    }
 
     for item in &items {
         actor
@@ -1055,6 +1235,7 @@ mod tests {
         Entry {
             package_name: format!("dev.caloptreyx.{name}"),
             name: name.into(),
+            description: None,
             repo: Some(name.into()),
             repo_url: None,
             archived: false,
@@ -1069,6 +1250,7 @@ mod tests {
             rollback: None,
             is_self: false,
             updates_enabled,
+            skipped_version: None,
         }
     }
 
@@ -1082,17 +1264,30 @@ mod tests {
     }
 
     #[test]
-    fn updates_off_are_not_counted() {
-        let counted: Vec<String> = summary_items(entries())
+    fn updates_off_and_skipped_are_not_counted() {
+        let mut list = entries();
+        let mut skipped = entry("skipped", Status::UpdateAvailable, true);
+        skipped.skipped_version = Some("1.1.0".into());
+        let mut newer_than_skipped = entry("newer", Status::UpdateAvailable, true);
+        newer_than_skipped.skipped_version = Some("1.0.5".into());
+        list.push(skipped);
+        list.push(newer_than_skipped);
+
+        let counted: Vec<String> = summary_items(list)
             .into_iter()
             .map(|item| item.package_name)
             .collect();
-        assert_eq!(counted, ["dev.caloptreyx.on"]);
+        assert_eq!(counted, ["dev.caloptreyx.on", "dev.caloptreyx.newer"]);
     }
 
     #[test]
-    fn automatic_updates_skip_updates_off() {
-        let wanted: Vec<String> = auto_wanted(entries(), &BTreeSet::new())
+    fn automatic_updates_skip_updates_off_and_skipped_versions() {
+        let mut list = entries();
+        let mut skipped = entry("skipped", Status::UpdateAvailable, true);
+        skipped.skipped_version = Some("1.1.0".into());
+        list.push(skipped);
+
+        let wanted: Vec<String> = auto_wanted(list, &BTreeSet::new())
             .into_iter()
             .map(|want| want.package_name)
             .collect();
@@ -1100,8 +1295,12 @@ mod tests {
     }
 
     #[test]
-    fn installing_is_refused_while_updates_are_off() {
-        let entries = entries();
+    fn installing_is_refused_while_updates_are_off_or_skipped_unless_forced() {
+        let mut entries = entries();
+        let mut skipped = entry("skipped", Status::UpdateAvailable, true);
+        skipped.skipped_version = Some("1.1.0".into());
+        entries.push(skipped);
+
         let want = |name: &str| Wanted {
             package_name: format!("dev.caloptreyx.{name}"),
             version: "1.1.0".into(),
@@ -1109,18 +1308,121 @@ mod tests {
         let snapshot = Snapshot::default();
         let accept = BTreeSet::new();
 
-        // a request for it (a stale "Update all", an API call) is refused
-        let Err(RunError::Invalid(message)) = plans_for(&snapshot, &entries, &[want("off")], &accept)
+        // a non-forced request for paused or skipped is refused
+        let Err(RunError::Invalid(message)) =
+            plans_for(&snapshot, &entries, &[want("off")], &accept, false)
         else {
             panic!("an extension with updates off was planned");
         };
         assert_eq!(message, "updates are off for off; turn them on to install a release");
 
-        // with updates on, it gets past that check (here: no release in the snapshot)
-        let Err(RunError::Invalid(message)) = plans_for(&snapshot, &entries, &[want("on")], &accept)
+        let Err(RunError::Invalid(message)) =
+            plans_for(&snapshot, &entries, &[want("skipped")], &accept, false)
         else {
-            panic!("planned without a release");
+            panic!("a skipped release was planned without force");
         };
-        assert!(message.contains("is gone"), "{message}");
+        assert!(message.contains("is skipped"), "{message}");
+
+        // with force=true ("Install anyway"), paused and skipped get past those guards
+        // (and still hit the release/checksum/allowlist checks: here, no release in snapshot)
+        for name in ["off", "skipped", "on"] {
+            let Err(RunError::Invalid(message)) =
+                plans_for(&snapshot, &entries, &[want(name)], &accept, true)
+            else {
+                panic!("planned without a release for {name}");
+            };
+            assert!(message.contains("is gone"), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn priority_sorting_orders_installed_by_actionability_then_name() {
+        let mut update_b = entry("Bravo", Status::UpdateAvailable, true);
+        let update_a = entry("Alpha", Status::UpdateAvailable, true);
+        let mut unverified = entry("Unverified", Status::UpdateAvailable, true);
+        unverified.latest = Some(ReleaseView {
+            verified: false,
+            ..release("1.1.0")
+        });
+        let mut needs_panel = entry("NeedsPanel", Status::NeedsPanel, true);
+        needs_panel.latest = None;
+        needs_panel.needs_panel = Some(release("2.0.0"));
+        let up_to_date = entry("Current", Status::UpToDate, true);
+        let paused = entry("Paused", Status::UpdateAvailable, false);
+        let mut skipped = entry("Skipped", Status::UpdateAvailable, true);
+        skipped.skipped_version = Some("1.1.0".into());
+        let mut no_release = entry("NoRelease", Status::NoRelease, true);
+        no_release.latest = None;
+        let avail_z = entry("Zeta", Status::Installable, true);
+        let avail_a = entry("Aardvark", Status::Installable, true);
+        update_b.latest = Some(release("1.2.0"));
+
+        let mut list = vec![
+            avail_z,
+            no_release,
+            skipped,
+            paused,
+            up_to_date,
+            needs_panel,
+            unverified,
+            update_b,
+            update_a,
+            avail_a,
+        ];
+        list.sort_by_key(sort_key);
+        let names: Vec<&str> = list.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Alpha",
+                "Bravo",
+                "NeedsPanel",
+                "Unverified",
+                "Current",
+                "Paused",
+                "Skipped",
+                "NoRelease",
+                "Aardvark",
+                "Zeta",
+            ]
+        );
+    }
+
+    #[test]
+    fn last_failed_auto_tracks_only_newest_finished_failed_auto_run() {
+        let make_run = |id: i64, automatic: bool, state: RunState| Run {
+            id,
+            user_uuid: None,
+            automatic,
+            kind: RunKind::Update,
+            items: Vec::new(),
+            build_id: Some(id * 10),
+            after_build_id: None,
+            state,
+            message: Some(format!("msg {id}")),
+            failed_extensions: vec!["dev.caloptreyx.a".into()],
+            created: Utc::now(),
+            finished: (state != RunState::Building).then(Utc::now),
+        };
+
+        // Newest finished is failed auto -> reported
+        let failed = last_failed_auto(&[
+            make_run(3, false, RunState::Building),
+            make_run(2, true, RunState::Failed),
+            make_run(1, true, RunState::Succeeded),
+        ]);
+        assert_eq!(failed.as_ref().map(|r| r.id), Some(2));
+
+        // Newer run succeeded -> cleared
+        assert_eq!(
+            last_failed_auto(&[
+                make_run(3, false, RunState::Succeeded),
+                make_run(2, true, RunState::Failed),
+            ]),
+            None
+        );
+
+        // Manual failed run -> not reported as failed auto run
+        assert_eq!(last_failed_auto(&[make_run(2, false, RunState::Failed)]), None);
     }
 }

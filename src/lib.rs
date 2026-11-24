@@ -93,7 +93,13 @@ impl Extension for ExtensionStruct {
         else {
             return Ok(None);
         };
-        Ok((latest.version > *current_version).then(|| ExtensionUpdateInfo {
+        if latest.version <= *current_version {
+            return Ok(None);
+        }
+        if store::is_version_skipped(&state.database, PACKAGE, &latest.version.to_string()).await? {
+            return Ok(None);
+        }
+        Ok(Some(ExtensionUpdateInfo {
             version: latest.version.clone(),
             changes: latest
                 .release

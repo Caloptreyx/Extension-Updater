@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Tabbed **Extension Updates** page (**Installed**, **Available**, **History**, **Settings**) with
+  search, status filters, grouped updates section, and actionable priority sorting.
+- Selective batch updates & installs across Installed and Available tabs ("Apply in 1 rebuild")
+  with a pre-update confirmation modal and release notes preview.
+- Compact extension cards with clean `⋯` overflow menu for Pause/Resume, Skip version, Install
+  anyway, Roll back, and external links; repository descriptions shown for available extensions.
+- Per-extension skip version (`PUT /skip`) and manual `force` override for paused/skipped releases.
+- Upgraded live build progress card with 6-step phase indicator, elapsed timer, and completion toast;
+  dismissible last-run alerts and full run history tab.
+- Live building and failed automatic update awareness in the admin banner and Admin › Updates card.
+- Grouped Settings with formatted 24-hour selector showing the panel's time zone, live GitHub API
+  quota readout, and a **Test token** button (`POST /test-token`), plus ETag caching for `org_repos`.
+
 ## 0.1.0
 
 - First version: lists the installed Caloptreyx extensions (and the ones not installed yet) with

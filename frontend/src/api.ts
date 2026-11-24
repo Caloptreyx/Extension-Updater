@@ -3,9 +3,10 @@ import type {
   LicenseNeeded,
   Overview,
   RunStarted,
-  Settings,
+  SettingsResponse,
   SettingsUpdate,
   Summary,
+  TokenTestResult,
   UpdateRequest,
 } from './lib/types.ts';
 
@@ -50,8 +51,17 @@ export const setUpdates = async (packageName: string, enabled: boolean): Promise
   await axiosInstance.put(`${ADMIN_BASE}/updates`, { package_name: packageName, enabled });
 };
 
-export const getSettings = async (): Promise<Settings> =>
-  (await axiosInstance.get(`${ADMIN_BASE}/settings`)).data.settings;
+/** Skips a specific release version for an extension, or clears the skip when `version` is null. */
+export const setSkippedVersion = async (packageName: string, version: string | null): Promise<void> => {
+  await axiosInstance.put(`${ADMIN_BASE}/skip`, { package_name: packageName, version });
+};
 
-export const updateSettings = async (settings: SettingsUpdate): Promise<Settings> =>
-  (await axiosInstance.put(`${ADMIN_BASE}/settings`, settings)).data.settings;
+/** Tests a provided GitHub token without saving it, or the currently stored token when omitted/null. */
+export const testToken = async (githubToken?: string | null): Promise<TokenTestResult> =>
+  (await axiosInstance.post(`${ADMIN_BASE}/test-token`, { github_token: githubToken ?? null })).data;
+
+export const getSettings = async (): Promise<SettingsResponse> =>
+  (await axiosInstance.get(`${ADMIN_BASE}/settings`)).data;
+
+export const updateSettings = async (settings: SettingsUpdate): Promise<SettingsResponse> =>
+  (await axiosInstance.put(`${ADMIN_BASE}/settings`, settings)).data;

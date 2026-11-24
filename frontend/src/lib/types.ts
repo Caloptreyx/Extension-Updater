@@ -36,6 +36,7 @@ export interface Release {
 export interface Entry {
   package_name: string;
   name: string;
+  description: string | null;
   repo: string | null;
   repo_url: string | null;
   archived: boolean;
@@ -51,6 +52,8 @@ export interface Entry {
   is_self: boolean;
   /** Off: no Update or Install button, not counted as an update, skipped by "Update all" and automatic updates. */
   updates_enabled: boolean;
+  /** Specific release version skipped by an admin; hidden until a newer release is published. */
+  skipped_version: string | null;
 }
 
 export interface RunItem {
@@ -119,6 +122,12 @@ export interface Settings {
   github_token: { set: boolean; hint: string | null };
 }
 
+export interface SettingsResponse {
+  settings: Settings;
+  timezone: string;
+  rate_limit?: RateLimit | null;
+}
+
 export interface SettingsUpdate {
   check_interval_hours: number;
   allow_prereleases: boolean;
@@ -137,16 +146,23 @@ export interface RateLimit {
   authenticated: boolean;
 }
 
+export interface TokenTestResult {
+  valid: boolean;
+  rate_limit: RateLimit | null;
+  error: string | null;
+}
+
 export interface Overview {
   management: { available: boolean; reason: 'not_heavy' | 'disabled' | null };
   can_manage: boolean;
   panel_version: string;
+  timezone: string;
   checked_at: string | null;
   checking: boolean;
   check_errors: string[];
   rate_limit: RateLimit | null;
   settings: Settings;
-  /** Installed ones first, then not installed; sorted by name. */
+  /** Installed ones first (sorted by actionable priority, then name), then not installed (by name). */
   extensions: Entry[];
   supervisor: SupervisorStatus | null;
   /** Newest first, at most 10. */
@@ -160,10 +176,20 @@ export interface SummaryUpdate {
   to: string;
 }
 
+export interface SummaryFailedRun {
+  id: number;
+  message: string | null;
+  failed_extensions: string[];
+  finished: string | null;
+  build_id: number | null;
+}
+
 export interface Summary {
   show_banner: boolean;
   building: boolean;
+  building_items: string[];
   updates: SummaryUpdate[];
+  last_failed_auto_run: SummaryFailedRun | null;
 }
 
 export interface PackageVersion {

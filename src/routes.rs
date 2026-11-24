@@ -3,6 +3,7 @@
 //! on or off and changing settings need `extensions.manage`, like the panel's own extension upload.
 
 use crate::{
+    github,
     settings::{self, Settings, Update},
     updater::{self, Actor, Mode, RunError, Wanted},
 };
@@ -135,10 +136,61 @@ async fn set_updates(
     respond(result)
 }
 
+#[derive(Deserialize)]
+struct SkipRequest {
+    package_name: String,
+    version: Option<String>,
+}
+
+/// Sets or clears the skipped release version of an extension. Works on notify-only panels too.
+async fn set_skip(
+    state: GetState,
+    permissions: GetPermissionManager,
+    activity_logger: GetAdminActivityLogger,
+    Payload(data): Payload<SkipRequest>,
+) -> ApiResponseResult {
+    permissions.has_admin_permission("extensions.manage")?;
+    let result = updater::set_skipped_version(
+        &state,
+        &actor(&activity_logger),
+        &data.package_name,
+        data.version.as_deref(),
+    )
+    .await
+    .map(|skipped_version| {
+        json!({
+            "package_name": data.package_name,
+            "skipped_version": skipped_version,
+        })
+    });
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct TestTokenRequest {
+    #[serde(default)]
+    github_token: Option<String>,
+}
+
+/// Tests a provided GitHub token (without saving it) or the currently stored token.
+async fn test_token(
+    state: GetState,
+    permissions: GetPermissionManager,
+    Payload(data): Payload<TestTokenRequest>,
+) -> ApiResponseResult {
+    permissions.has_admin_permission("extensions.manage")?;
+    respond(updater::test_token(&state, data.github_token.as_deref()).await)
+}
+
 async fn get_settings(state: GetState, permissions: GetPermissionManager) -> ApiResponseResult {
     permissions.has_admin_permission("extensions.read")?;
     let settings = settings::load(&state).await?;
-    ApiResponse::new_serialized(json!({ "settings": settings.admin_view() })).ok()
+    ApiResponse::new_serialized(json!({
+        "settings": settings.admin_view(),
+        "timezone": updater::panel_timezone(),
+        "rate_limit": github::rate_limit(),
+    }))
+    .ok()
 }
 
 async fn put_settings(
@@ -178,7 +230,12 @@ async fn put_settings(
             }),
         )
         .await;
-    ApiResponse::new_serialized(json!({ "settings": view })).ok()
+    ApiResponse::new_serialized(json!({
+        "settings": view,
+        "timezone": updater::panel_timezone(),
+        "rate_limit": github::rate_limit(),
+    }))
+    .ok()
 }
 
 pub fn router(state: &State) -> OpenApiRouter<State> {
@@ -189,6 +246,8 @@ pub fn router(state: &State) -> OpenApiRouter<State> {
         .route("/update", post(update))
         .route("/rollback", post(rollback))
         .route("/updates", put(set_updates))
+        .route("/skip", put(set_skip))
+        .route("/test-token", post(test_token))
         .route("/settings", get(get_settings).put(put_settings))
         .with_state(state.clone())
 }

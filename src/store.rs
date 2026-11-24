@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::database::Database;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Cached {
     pub etag: Option<String>,
@@ -180,6 +180,77 @@ pub async fn set_updates(
         .execute(db.write())
         .await?;
     }
+    Ok(())
+}
+
+/// Specific release versions skipped per extension.
+pub async fn skipped_versions(db: &Database) -> Result<BTreeMap<String, String>, sqlx::Error> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT package_name, version FROM dev_caloptreyx_updater_skipped")
+            .fetch_all(db.read())
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
+pub async fn is_version_skipped(
+    db: &Database,
+    package_name: &str,
+    version: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT version FROM dev_caloptreyx_updater_skipped WHERE package_name = $1 AND version = $2",
+    )
+    .bind(package_name)
+    .bind(version)
+    .fetch_optional(db.read())
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Sets or clears the skipped release version of `package_name`.
+pub async fn set_skipped_version(
+    db: &Database,
+    package_name: &str,
+    version: Option<&str>,
+    user_uuid: Option<uuid::Uuid>,
+) -> Result<(), sqlx::Error> {
+    match version {
+        Some(version) => {
+            sqlx::query(
+                "INSERT INTO dev_caloptreyx_updater_skipped (package_name, version, user_uuid, updated)
+                 VALUES ($1, $2, $3, now())
+                 ON CONFLICT (package_name) DO UPDATE SET
+                     version = EXCLUDED.version, user_uuid = EXCLUDED.user_uuid, updated = now()",
+            )
+            .bind(package_name)
+            .bind(version)
+            .bind(user_uuid)
+            .execute(db.write())
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM dev_caloptreyx_updater_skipped WHERE package_name = $1")
+                .bind(package_name)
+                .execute(db.write())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Clears the skip row for `package_name` if it matches `version` (e.g. after manually installing it).
+pub async fn clear_skipped_version_if(
+    db: &Database,
+    package_name: &str,
+    version: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM dev_caloptreyx_updater_skipped WHERE package_name = $1 AND version = $2",
+    )
+    .bind(package_name)
+    .bind(version)
+    .execute(db.write())
+    .await?;
     Ok(())
 }
 

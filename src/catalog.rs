@@ -50,6 +50,8 @@ pub fn valid_repo_name(name: &str) -> bool {
 pub struct Repo {
     pub name: String,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub default_branch: String,
     #[serde(default)]
     pub archived: bool,
@@ -75,6 +77,8 @@ pub struct Listing {
     pub repo: String,
     pub package_name: String,
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub archived: bool,
 }
 
@@ -84,10 +88,17 @@ pub fn listing(repo: &Repo, metadata_toml: &str) -> Option<Listing> {
         return None;
     }
     let metadata = parse_metadata(metadata_toml).ok()?;
+    let description = repo
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
     is_ours(&metadata.package_name).then(|| Listing {
         repo: repo.name.clone(),
         package_name: metadata.package_name,
         name: metadata.name,
+        description,
         archived: repo.archived,
     })
 }
@@ -424,6 +435,7 @@ mod tests {
     fn repositories_map_to_packages_by_their_metadata() {
         let repo = |name: &str, archived: bool, fork: bool| Repo {
             name: name.into(),
+            description: (name == "World-Map").then(|| "  Live map for game servers  ".into()),
             default_branch: "main".into(),
             archived,
             fork,
@@ -451,7 +463,9 @@ mod tests {
         let map = map_packages(found.clone());
         assert_eq!(map.len(), 3);
         assert_eq!(map[PKG].repo, "World-Map");
+        assert_eq!(map[PKG].description.as_deref(), Some("Live map for game servers"));
         assert_eq!(map["com.caloptreyx.serversplitter"].repo, "serversplitter");
+        assert_eq!(map["com.caloptreyx.serversplitter"].description, None);
         assert_eq!(map["dev.caloptreyx.mint"].repo, "Mint-Theme");
         let reversed = map_packages(found.into_iter().rev());
         assert_eq!(reversed["dev.caloptreyx.mint"].repo, "Mint-Theme");

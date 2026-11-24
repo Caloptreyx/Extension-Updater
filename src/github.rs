@@ -103,20 +103,45 @@ fn header_value<T: std::str::FromStr>(headers: &header::HeaderMap, name: &str) -
     headers.get(name)?.to_str().ok()?.trim().parse().ok()
 }
 
+fn parse_rate_headers(headers: &header::HeaderMap, authenticated: bool) -> Option<RateLimit> {
+    Some(RateLimit {
+        limit: header_value::<u32>(headers, "x-ratelimit-limit")?,
+        remaining: header_value::<u32>(headers, "x-ratelimit-remaining")?,
+        reset: header_value::<i64>(headers, "x-ratelimit-reset")?,
+        authenticated,
+    })
+}
+
 fn note_rate(headers: &header::HeaderMap, authenticated: bool) {
-    let (Some(limit), Some(remaining), Some(reset)) = (
-        header_value::<u32>(headers, "x-ratelimit-limit"),
-        header_value::<u32>(headers, "x-ratelimit-remaining"),
-        header_value::<i64>(headers, "x-ratelimit-reset"),
-    ) else {
+    let Some(rate) = parse_rate_headers(headers, authenticated) else {
         return;
     };
-    *RATE.lock().unwrap_or_else(|err| err.into_inner()) = Some(RateLimit {
-        limit,
-        remaining,
-        reset,
-        authenticated,
-    });
+    *RATE.lock().unwrap_or_else(|err| err.into_inner()) = Some(rate);
+}
+
+/// Result of testing a GitHub token against `GET /rate_limit`. Never contains the token itself.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct TokenTest {
+    pub valid: bool,
+    pub rate_limit: Option<RateLimit>,
+    pub error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RateLimitBody {
+    resources: RateLimitResources,
+}
+
+#[derive(serde::Deserialize)]
+struct RateLimitResources {
+    core: RateLimitCore,
+}
+
+#[derive(serde::Deserialize)]
+struct RateLimitCore {
+    limit: u32,
+    remaining: u32,
+    reset: i64,
 }
 
 /// The API quota is used up: no request is made until `reset`.
@@ -284,8 +309,10 @@ impl Github {
         for page in 1..=5 {
             let url =
                 format!("https://api.github.com/orgs/{ORG}/repos?type=public&per_page=100&page={page}");
-            let batch: Vec<catalog::Repo> = serde_json::from_str(&self.api_get(db, None, &url).await?)
-                .context("reading GitHub's repository list")?;
+            let key = format!("org_repos:page:{page}");
+            let batch: Vec<catalog::Repo> =
+                serde_json::from_str(&self.api_get(db, Some(&key), &url).await?)
+                    .context("reading GitHub's repository list")?;
             let full = batch.len() == 100;
             repos.extend(batch);
             if !full {
@@ -293,6 +320,77 @@ impl Github {
             }
         }
         Ok(repos)
+    }
+
+    /// Verifies a GitHub token against `GET /rate_limit` (works with fine-grained tokens that have
+    /// zero scopes and does not consume API quota). When `update_global` is true and the token is
+    /// valid, refreshes the cached rate-limit readout too.
+    pub async fn test_token(&self, update_global: bool) -> TokenTest {
+        let Some(token) = &self.token else {
+            return TokenTest {
+                valid: false,
+                rate_limit: None,
+                error: Some("No GitHub token provided.".into()),
+            };
+        };
+        let response = match API
+            .get("https://api.github.com/rate_limit")
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .bearer_auth(token)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                return TokenTest {
+                    valid: false,
+                    rate_limit: None,
+                    error: Some(format!("Could not reach GitHub: {err}")),
+                };
+            }
+        };
+        let status = response.status();
+        let from_headers = parse_rate_headers(response.headers(), true);
+        if status == StatusCode::UNAUTHORIZED {
+            return TokenTest {
+                valid: false,
+                rate_limit: None,
+                error: Some("GitHub rejected this token (401 Unauthorized).".into()),
+            };
+        }
+        if status == StatusCode::FORBIDDEN {
+            return TokenTest {
+                valid: false,
+                rate_limit: from_headers,
+                error: Some("GitHub refused this token (403 Forbidden).".into()),
+            };
+        }
+        if !status.is_success() {
+            return TokenTest {
+                valid: false,
+                rate_limit: from_headers,
+                error: Some(format!("GitHub answered {status} while verifying the token.")),
+            };
+        }
+        let body = read_limited(response, MAX_METADATA).await.ok();
+        let from_body = body
+            .and_then(|bytes| serde_json::from_slice::<RateLimitBody>(&bytes).ok())
+            .map(|parsed| RateLimit {
+                limit: parsed.resources.core.limit,
+                remaining: parsed.resources.core.remaining,
+                reset: parsed.resources.core.reset,
+                authenticated: true,
+            });
+        let rate_limit = from_body.or(from_headers);
+        if update_global && let Some(rate) = rate_limit {
+            *RATE.lock().unwrap_or_else(|err| err.into_inner()) = Some(rate);
+        }
+        TokenTest {
+            valid: true,
+            rate_limit,
+            error: None,
+        }
     }
 
     /// The newest releases of `repo` (drafts are only listed for tokens with push access).
