@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Tabbed **Extension Updates** page (**Installed**, **Available**, **History**, **Settings**) with
   search, status filters, grouped updates section, and actionable priority sorting.
