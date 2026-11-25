@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.2
+
+- Discord cards: a backslash in an extension name or version can no longer undo the markdown
+  escaping (which reopened bold text and masked links); line breaks, `<…>` tags and headings are
+  escaped too, and both are length-capped.
+- Discord cards leave out a button whose URL Discord would refuse (a panel URL that is not an
+  absolute `http(s)` URL), instead of the whole card being refused at every check. **Send test
+  message** now carries the same **Update** button, so a bad panel URL shows up when testing.
+- After the first failed Discord card (rate limit, timeout, deleted webhook) the check stops
+  sending and the remaining cards wait for the next check, instead of each costing another
+  request or timeout while the check holds its lock.
+- Webhook URLs copied from the Discord PTB or Canary client and `discordapp.com` URLs are
+  accepted and sent to `discord.com`; other hosts are still refused.
+- Release notes: GitHub alert markers are matched case-insensitively (`> [!note]`), like on GitHub.
+
 ## 0.2.1
 
 - Optional Discord Components V2 notifications for new extension updates.

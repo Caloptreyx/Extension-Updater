@@ -307,6 +307,25 @@ fn plan_discord_notifications(
     DiscordPlan { send, next_known }
 }
 
+/// Puts the known version of every card that was not delivered back to what it was before the
+/// check (or forgets it), so the next check offers it again.
+fn revert_unsent(
+    next_known: &mut BTreeMap<String, String>,
+    known: &BTreeMap<String, String>,
+    unsent: &[DiscordNotification],
+) {
+    for item in unsent {
+        match known.get(&item.package_name) {
+            Some(orig) => {
+                next_known.insert(item.package_name.clone(), orig.clone());
+            }
+            None => {
+                next_known.remove(&item.package_name);
+            }
+        }
+    }
+}
+
 fn destination_fingerprint(settings: &Settings) -> Option<String> {
     discord::configured(settings).map(|url| {
         let digest: trust::Sha256 = sha2::Sha256::digest(url.as_str().as_bytes()).into();
@@ -349,7 +368,10 @@ async fn notify_discord(
     if let Some(webhook) = discord::configured(settings) {
         let updates_url = discord::updates_page(state).await?;
 
-        for item in &plan.send {
+        // One card after the other; the first failure (rate limit, timeout, revoked webhook)
+        // stops the round, and the unsent cards wait for the next check instead of each
+        // costing another request or timeout now.
+        for (index, item) in plan.send.iter().enumerate() {
             let update = discord::Update {
                 extension: &item.extension_name,
                 version: &item.version,
@@ -361,15 +383,8 @@ async fn notify_discord(
                     "extension updater: failed sending discord card for {}: {err:#}",
                     item.package_name
                 );
-                // Revert only failed candidate's known-version to original value (or remove if missing)
-                match known.get(&item.package_name) {
-                    Some(orig) => {
-                        to_persist.insert(item.package_name.clone(), orig.clone());
-                    }
-                    None => {
-                        to_persist.remove(&item.package_name);
-                    }
-                }
+                revert_unsent(&mut to_persist, &known, &plan.send[index..]);
+                break;
             }
         }
     }
@@ -1682,27 +1697,27 @@ mod tests {
     }
 
     #[test]
-    fn failed_delivery_reverts_known_candidate_while_retaining_others() {
+    fn unsent_cards_are_offered_again_and_sent_ones_are_kept() {
         let mut known: BTreeMap<String, String> = BTreeMap::new();
-        known.insert("dev.caloptreyx.succeeded".into(), "1.0.0".into());
-        known.insert("dev.caloptreyx.failed".into(), "1.0.0".into());
-        // plan would advance both to 1.1.0
-        let mut to_persist: BTreeMap<String, String> = BTreeMap::new();
-        to_persist.insert("dev.caloptreyx.succeeded".into(), "1.1.0".into());
-        to_persist.insert("dev.caloptreyx.failed".into(), "1.1.0".into());
+        known.insert("dev.caloptreyx.on".into(), "1.0.0".into());
+        known.insert("dev.caloptreyx.later".into(), "1.0.0".into());
+        let entries = vec![
+            entry("on", Status::UpdateAvailable, true),
+            entry("later", Status::UpdateAvailable, true),
+            entry("new", Status::UpdateAvailable, true),
+        ];
+        let mut plan = plan_discord_notifications(&entries, &known, true);
+        assert_eq!(plan.send.len(), 3);
 
-        // simulate failure of "dev.caloptreyx.failed"
-        let failed_item = "dev.caloptreyx.failed";
-        match known.get(failed_item) {
-            Some(orig) => {
-                to_persist.insert(failed_item.to_string(), orig.clone());
-            }
-            None => {
-                to_persist.remove(failed_item);
-            }
-        }
+        // the first card went out, the second failed: it and every card after it stay unsent
+        revert_unsent(&mut plan.next_known, &known, &plan.send[1..]);
+        assert_eq!(plan.next_known.get("dev.caloptreyx.on").unwrap(), "1.1.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.later").unwrap(), "1.0.0");
+        assert!(!plan.next_known.contains_key("dev.caloptreyx.new"));
 
-        assert_eq!(to_persist.get("dev.caloptreyx.succeeded").unwrap(), "1.1.0");
-        assert_eq!(to_persist.get("dev.caloptreyx.failed").unwrap(), "1.0.0");
+        // the next check sends exactly the two that were not delivered
+        let retry = plan_discord_notifications(&entries, &plan.next_known, true);
+        let names: Vec<&str> = retry.send.iter().map(|n| n.package_name.as_str()).collect();
+        assert_eq!(names, ["dev.caloptreyx.later", "dev.caloptreyx.new"]);
     }
 }

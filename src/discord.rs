@@ -38,7 +38,19 @@ fn sender() -> anyhow::Result<&'static reqwest::Client> {
         .context("the Discord webhook client could not be built")
 }
 
-/// A webhook URL that is exactly `https://discord.com/api/webhooks/<id>/<token>`.
+/// Hosts Discord hands out webhook URLs on (the stable, PTB and Canary clients, and the old
+/// domain). Matched exactly, never as a suffix; every one is sent to `discord.com`.
+const WEBHOOK_HOSTS: [&str; 6] = [
+    "discord.com",
+    "ptb.discord.com",
+    "canary.discord.com",
+    "discordapp.com",
+    "ptb.discordapp.com",
+    "canary.discordapp.com",
+];
+
+/// A webhook URL of the form `https://discord.com/api/webhooks/<id>/<token>`, returned with the
+/// host set to `discord.com` (PTB, Canary and `discordapp.com` copies are accepted).
 ///
 /// Deceptive hosts (userinfo, `discord.com.evil`, `evil.discord.com`, custom ports, trailing
 /// dots), extra path segments, queries and fragments are refused.
@@ -57,7 +69,7 @@ pub fn validate_url(raw: &str) -> anyhow::Result<Url> {
     if !url.username().is_empty() || url.password().is_some() {
         bail!("the Discord webhook URL must not contain a username or password");
     }
-    if url.host_str() != Some("discord.com") {
+    if !url.host_str().is_some_and(|host| WEBHOOK_HOSTS.contains(&host)) {
         bail!("the Discord webhook URL must point to discord.com");
     }
     if url.port().is_some() {
@@ -84,7 +96,18 @@ pub fn validate_url(raw: &str) -> anyhow::Result<Url> {
     {
         bail!("the Discord webhook URL has an invalid webhook token");
     }
+    let mut url = url;
+    url.set_host(Some("discord.com"))
+        .context("the Discord webhook URL could not be normalized")?;
     Ok(url)
+}
+
+/// An absolute http(s) URL with a host: Discord refuses the whole message when a link button
+/// carries anything else.
+fn is_link(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|url| {
+        matches!(url.scheme(), "https" | "http") && url.host_str().is_some_and(|h| !h.is_empty())
+    })
 }
 
 /// The panel's Extension Updates page, from the configured public URL (never the request host).
@@ -105,15 +128,28 @@ pub struct Update<'a> {
     pub updates_url: &'a str,
 }
 
-fn escape_markdown(text: &str) -> String {
+/// Untrusted text for one line of a Discord card: markdown and the escape character itself are
+/// escaped, line breaks become spaces (no headings, lists or subtext), and the length is capped
+/// so the card stays far below Discord's limits.
+fn escape_markdown(text: &str, max_chars: usize) -> String {
     let mut escaped = String::with_capacity(text.len());
-    for c in text.chars() {
-        if matches!(c, '*' | '_' | '`' | '~' | '|' | '>' | '[' | ']') {
+    for c in text.chars().take(max_chars) {
+        if c.is_control() {
+            escaped.push(' ');
+            continue;
+        }
+        if matches!(c, '\\' | '*' | '_' | '`' | '~' | '|' | '>' | '<' | '[' | ']' | '#' | ':') {
             escaped.push('\\');
         }
         escaped.push(c);
     }
     escaped
+}
+
+fn update_button(updates_url: &str) -> Option<Value> {
+    is_link(updates_url).then(|| {
+        json!({ "type": 2, "style": 5, "label": "Update", "url": updates_url })
+    })
 }
 
 /// The stored webhook, when notifications are on and the URL is still valid.
@@ -124,51 +160,51 @@ pub fn configured(settings: &crate::settings::Settings) -> Option<Url> {
     validate_url(&settings.discord_webhook_url).ok()
 }
 
-/// The Components V2 card: extension and version, **View release** and **Update** buttons.
+/// The Components V2 card: extension and version, **View release** and **Update** buttons. A
+/// button whose URL Discord would refuse (no release page, a panel URL that is not absolute
+/// http(s)) is left out instead of losing the whole card.
 pub fn update_payload(update: &Update<'_>) -> Value {
     let mut buttons = Vec::with_capacity(2);
-    // Discord rejects a link button with an empty or non-http(s) URL; an older cached release
-    // may have no html_url, and the Update button alone is still useful.
-    if update.release_url.starts_with("https://") || update.release_url.starts_with("http://") {
+    if is_link(update.release_url) {
         buttons.push(json!({
             "type": 2, "style": 5, "label": "View release", "url": update.release_url,
         }));
     }
-    buttons.push(json!({
-        "type": 2, "style": 5, "label": "Update", "url": update.updates_url,
-    }));
+    buttons.extend(update_button(update.updates_url));
+
+    let mut components = vec![json!({
+        "type": 10,
+        "content": format!(
+            "**{}** {} is available.",
+            escape_markdown(update.extension, 100),
+            escape_markdown(update.version, 64),
+        ),
+    })];
+    if !buttons.is_empty() {
+        components.push(json!({ "type": 1, "components": buttons }));
+    }
 
     json!({
         "flags": COMPONENTS_V2,
         "allowed_mentions": { "parse": [] },
-        "components": [{
-            "type": 17,
-            "components": [
-                {
-                    "type": 10,
-                    "content": format!(
-                        "**{}** {} is available.",
-                        escape_markdown(update.extension),
-                        escape_markdown(update.version),
-                    ),
-                },
-                { "type": 1, "components": buttons },
-            ],
-        }],
+        "components": [{ "type": 17, "components": components }],
     })
 }
 
-fn test_payload() -> Value {
+/// The test card carries the same **Update** button as a real card, so a panel URL Discord
+/// refuses shows up when testing instead of on the first real update.
+fn test_payload(updates_url: &str) -> Value {
+    let mut components = vec![json!({
+        "type": 10,
+        "content": "**Extension Updater** is connected. New compatible updates will be announced here.",
+    })];
+    if let Some(button) = update_button(updates_url) {
+        components.push(json!({ "type": 1, "components": [button] }));
+    }
     json!({
         "flags": COMPONENTS_V2,
         "allowed_mentions": { "parse": [] },
-        "components": [{
-            "type": 17,
-            "components": [{
-                "type": 10,
-                "content": "**Extension Updater** is connected. New compatible updates will be announced here.",
-            }],
-        }],
+        "components": [{ "type": 17, "components": components }],
     })
 }
 
@@ -220,8 +256,8 @@ pub async fn send_update(webhook: &Url, update: &Update<'_>) -> anyhow::Result<(
 }
 
 /// Sends the test card. Touches no settings and no update-detection state.
-pub async fn send_test(webhook: &Url) -> anyhow::Result<()> {
-    post(webhook, &test_payload()).await
+pub async fn send_test(webhook: &Url, updates_url: &str) -> anyhow::Result<()> {
+    post(webhook, &test_payload(updates_url)).await
 }
 
 #[cfg(test)]
@@ -235,13 +271,27 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_the_canonical_webhook_endpoint() {
+    fn accepts_only_discord_webhook_endpoints() {
         assert_eq!(validate_url(&webhook()).unwrap().as_str(), webhook());
+        // copies from the PTB and Canary clients and the old domain go to discord.com
+        for host in [
+            "ptb.discord.com",
+            "canary.discord.com",
+            "discordapp.com",
+            "ptb.discordapp.com",
+            "canary.discordapp.com",
+            "DISCORD.com",
+        ] {
+            let copied = format!("https://{host}/api/webhooks/{ID}/{TOKEN}");
+            assert_eq!(validate_url(&copied).unwrap().as_str(), webhook(), "{copied}");
+        }
 
         for bad in [
             // not Discord's endpoint
-            format!("https://discordapp.com/api/webhooks/{ID}/{TOKEN}"),
-            format!("https://ptb.discord.com/api/webhooks/{ID}/{TOKEN}"),
+            format!("https://evil.discord.com/api/webhooks/{ID}/{TOKEN}"),
+            format!("https://evil.discordapp.com/api/webhooks/{ID}/{TOKEN}"),
+            format!("https://discordapp.com.evil.example/api/webhooks/{ID}/{TOKEN}"),
+            format!("https://127.0.0.1/api/webhooks/{ID}/{TOKEN}"),
             format!("https://discord.com.evil.example/api/webhooks/{ID}/{TOKEN}"),
             format!("https://evil.example/discord.com/api/webhooks/{ID}/{TOKEN}"),
             format!("https://discord.com./api/webhooks/{ID}/{TOKEN}"),
@@ -335,18 +385,28 @@ mod tests {
     }
 
     #[test]
-    fn test_card_is_components_v2_without_buttons() {
-        let payload = test_payload();
+    fn escaping_cannot_be_undone_by_a_backslash_or_a_new_line() {
+        // a backslash of its own would turn `\*` back into a working `*`
+        assert_eq!(escape_markdown(r"\*\*x\*\*", 100), r"\\\*\\\*x\\\*\\\*");
+        assert_eq!(escape_markdown(r"\[x\](https://evil)", 100), r"\\\[x\\\](https\://evil)");
+        // no headings, subtext or second line, no `<@id>` or `<t:…>` tags
+        assert_eq!(escape_markdown("x\n# big\r\n-# small", 100), r"x \# big  -\# small");
+        assert_eq!(escape_markdown("<@123>", 100), r"\<@123\>");
+        assert_eq!(escape_markdown(&"a".repeat(500), 100).len(), 100);
+    }
+
+    #[test]
+    fn test_card_carries_the_update_button_of_a_real_card() {
+        let payload = test_payload("https://panel.example.com/admin/extension-updates");
         assert_eq!(payload["flags"], 32768);
         assert!(payload.get("content").is_none());
         assert_eq!(payload["components"][0]["components"][0]["type"], 10);
-        assert!(
-            payload["components"][0]["components"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|component| component["type"] != 1)
-        );
+        let buttons = payload["components"][0]["components"][1]["components"]
+            .as_array()
+            .unwrap();
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0]["label"], "Update");
+        assert_eq!(buttons[0]["url"], "https://panel.example.com/admin/extension-updates");
     }
 
     #[test]
@@ -362,6 +422,25 @@ mod tests {
             .unwrap();
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0]["label"], "Update");
+    }
+
+    #[test]
+    fn buttons_discord_would_refuse_are_left_out() {
+        // a panel URL without scheme or host would make Discord refuse the whole card
+        for updates_url in ["", "/admin/extension-updates", "localhost:8000/admin/extension-updates"] {
+            let payload = update_payload(&Update {
+                extension: "Example",
+                version: "1.0.0",
+                release_url: "javascript:alert(1)",
+                updates_url,
+            });
+            let components = payload["components"][0]["components"].as_array().unwrap();
+            assert_eq!(components.len(), 1, "{updates_url}: {payload}");
+            assert_eq!(components[0]["type"], 10);
+
+            let test = test_payload(updates_url);
+            assert_eq!(test["components"][0]["components"].as_array().unwrap().len(), 1);
+        }
     }
 
     #[test]
@@ -408,7 +487,7 @@ mod tests {
         });
 
         let webhook = Url::parse(&format!("http://{server_addr}/api/webhooks/{ID}/{TOKEN}")).unwrap();
-        post(&webhook, &test_payload()).await.unwrap();
+        post(&webhook, &test_payload("")).await.unwrap();
         let request = receiver.await.unwrap();
         assert!(
             request.starts_with("POST /api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_?with_components=true HTTP/1.1"),
@@ -438,7 +517,7 @@ mod tests {
         });
 
         let webhook = Url::parse(&format!("http://{origin_addr}/api/webhooks")).unwrap();
-        let error = post(&webhook, &test_payload()).await.unwrap_err().to_string();
+        let error = post(&webhook, &test_payload("")).await.unwrap_err().to_string();
         assert!(
             error.contains("redirect") && !error.contains(&origin_addr.to_string()),
             "{error}"
@@ -456,7 +535,7 @@ mod tests {
             "http://127.0.0.1:1/api/webhooks/{ID}/{TOKEN}"
         ))
         .unwrap();
-        let error = post(&webhook, &test_payload()).await.unwrap_err().to_string();
+        let error = post(&webhook, &test_payload("")).await.unwrap_err().to_string();
         assert!(!error.contains(TOKEN), "{error}");
         assert!(!error.contains("127.0.0.1"), "{error}");
     }

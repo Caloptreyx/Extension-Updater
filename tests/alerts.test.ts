@@ -26,6 +26,17 @@ test('GitHub alerts keep formatted content and replace the marker with a label',
   }
 });
 
+test('alert markers are matched case-insensitively, like on GitHub', () => {
+  const quote = element('blockquote', element('p', text('[!warning]\nBack up first')));
+  releaseNoteAlerts()({ children: [quote] });
+  assert.equal(quote.tagName, 'div');
+  const [heading, body] = quote.children;
+  assert.equal(heading.type, 'element');
+  assert.deepEqual(heading.children, [text('Warning')]);
+  assert.equal(body.type, 'element');
+  assert.deepEqual(body.children, [text('Back up first')]);
+});
+
 test('ordinary quotes, unknown markers, inline markers and code stay unchanged', () => {
   const tree = {
     children: [

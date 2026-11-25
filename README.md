@@ -150,6 +150,13 @@ After the initial check establishes a baseline, newly detected compatible update
 extensions get a Discord card. **View release** opens GitHub; **Update** opens the panel page
 without installing anything. Already known updates are not sent when notifications are enabled.
 
+Only Discord's own webhook URLs are accepted: `https://discord.com/api/webhooks/<id>/<token>`, also
+as copied from the PTB or Canary client or with the old `discordapp.com` domain (all sent to
+`discord.com`). Requests never follow a redirect, and the URL is stored encrypted and never shown
+again. The **Update** button uses the panel URL from **Admin → Settings**; when that is not an
+absolute `http(s)` URL the button is left out. If Discord refuses a card or does not answer, the
+remaining cards of that check wait for the next check.
+
 ## Permissions
 
 | Action | Needs |

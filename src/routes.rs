@@ -215,7 +215,8 @@ async fn test_discord_webhook(
                 .ok();
         }
     };
-    match discord::send_test(&webhook).await {
+    let updates_url = discord::updates_page(&state).await?;
+    match discord::send_test(&webhook, &updates_url).await {
         Ok(()) => ApiResponse::new_serialized(json!({ "ok": true })).ok(),
         Err(err) => ApiResponse::error(err.to_string())
             .with_status(StatusCode::BAD_REQUEST)

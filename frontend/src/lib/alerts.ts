@@ -20,13 +20,14 @@ export function releaseNoteAlerts() {
       const first = paragraph.children[0];
       if (first?.type !== 'text') continue;
 
-      const match = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/.exec(first.value);
+      // GitHub reads the marker case-insensitively: `[!note]` is a note too.
+      const match = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i.exec(first.value);
       if (!match) continue;
       const remainder = first.value.slice(match[0].length);
       const next = paragraph.children[1];
       const hardBreak = !remainder && next?.type === 'element' && next.tagName === 'br';
       if (!match[0].endsWith('\n') && next && !hardBreak) continue;
-      const [label, color] = alerts[match[1] as keyof typeof alerts];
+      const [label, color] = alerts[match[1].toUpperCase() as keyof typeof alerts];
 
       if (remainder) first.value = remainder;
       else paragraph.children.splice(0, hardBreak ? 2 : 1);
