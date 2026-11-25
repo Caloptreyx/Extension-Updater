@@ -60,6 +60,10 @@ export const setSkippedVersion = async (packageName: string, version: string | n
 export const testToken = async (githubToken?: string | null): Promise<TokenTestResult> =>
   (await axiosInstance.post(`${ADMIN_BASE}/test-token`, { github_token: githubToken ?? null })).data;
 
+/** Tests a Discord webhook URL without saving it, or tests the currently configured webhook when omitted/null. */
+export const testDiscordWebhook = async (webhookUrl?: string | null): Promise<{ ok: boolean }> =>
+  (await axiosInstance.post(`${ADMIN_BASE}/test-discord-webhook`, { webhook_url: webhookUrl ?? null })).data;
+
 export const getSettings = async (): Promise<SettingsResponse> =>
   (await axiosInstance.get(`${ADMIN_BASE}/settings`)).data;
 

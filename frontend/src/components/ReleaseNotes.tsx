@@ -5,6 +5,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import Anchor from '@/elements/typography/Anchor.tsx';
 import { markdownComponents } from '@/providers/TranslationProvider.tsx';
+import { releaseNoteAlerts } from '../lib/alerts.ts';
 import { isSafeUrl, sanitizeReleaseNotes } from '../lib/notes.ts';
 
 // No rehype-raw: raw HTML in the notes is never rendered. The text is sanitized first and the
@@ -36,7 +37,7 @@ export default function ReleaseNotes({ body }: { body: string }) {
 
   return (
     <Typography className='min-w-0 break-words text-sm leading-relaxed [&_ol]:list-decimal [&_ol]:pl-6 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-6'>
-      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={components}>
+      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize, releaseNoteAlerts]} components={components}>
         {text}
       </Markdown>
     </Typography>

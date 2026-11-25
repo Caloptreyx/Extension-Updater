@@ -2,7 +2,7 @@
 name = "dev_caloptreyx_updater"
 description = "Keeps Caloptreyx extensions up to date: shows their new releases in the admin area and installs them, several in one rebuild."
 authors = ["Caloptreyx"]
-version = "0.2.0"
+version = "0.2.1"
 edition = { workspace = true }
 
 [dependencies]

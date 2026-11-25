@@ -125,7 +125,7 @@ export default function ConfirmUpdateModal({ target, onConfirm, ...props }: Prop
               </Button>
             </div>
             <Collapse expanded={notesOpen}>
-              <Card p='sm' className='max-h-64 overflow-y-auto'>
+              <Card p='sm' className='max-h-64' style={{ overflowY: 'auto' }}>
                 <Stack gap='md'>
                   {entriesWithNotes.map(({ entry, releases }) => (
                     <Stack key={entry.package_name} gap='xs'>

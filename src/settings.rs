@@ -1,6 +1,8 @@
-//! Extension settings, edited on the updater page and the extension's card. The GitHub token is
-//! stored encrypted with the panel's database key and only ever leaves the backend masked.
+//! Extension settings, edited on the updater page and the extension's card. The GitHub token and
+//! the Discord webhook URL are stored encrypted with the panel's database key; only ever leaves
+//! the backend masked, and never in a settings read.
 
+use crate::discord;
 use serde::{Deserialize, Serialize};
 use shared::{
     State,
@@ -10,7 +12,7 @@ use shared::{
     },
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Settings {
     /// Hours between scheduled checks for new releases.
     pub check_interval_hours: u32,
@@ -24,6 +26,25 @@ pub struct Settings {
     pub show_banner: bool,
     /// A GitHub token, only to raise the API limit (60 requests an hour without one).
     pub github_token: String,
+    /// Announce new compatible updates in Discord. Off by default.
+    pub discord_enabled: bool,
+    /// The Discord webhook URL, a secret that never leaves the backend.
+    pub discord_webhook_url: String,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("check_interval_hours", &self.check_interval_hours)
+            .field("allow_prereleases", &self.allow_prereleases)
+            .field("auto_update", &self.auto_update)
+            .field("auto_update_hour", &self.auto_update_hour)
+            .field("show_banner", &self.show_banner)
+            .field("github_token", &SecretView::of(&self.github_token))
+            .field("discord_enabled", &self.discord_enabled)
+            .field("discord_webhook_configured", &!self.discord_webhook_url.is_empty())
+            .finish()
+    }
 }
 
 impl Default for Settings {
@@ -35,6 +56,8 @@ impl Default for Settings {
             auto_update_hour: 4,
             show_banner: true,
             github_token: String::new(),
+            discord_enabled: false,
+            discord_webhook_url: String::new(),
         }
     }
 }
@@ -67,6 +90,9 @@ pub struct AdminView {
     pub auto_update_hour: u32,
     pub show_banner: bool,
     pub github_token: SecretView,
+    pub discord_enabled: bool,
+    /// Read-only: whether a webhook URL is stored. The URL itself is never returned.
+    pub discord_webhook_configured: bool,
 }
 
 impl Settings {
@@ -78,11 +104,13 @@ impl Settings {
             auto_update_hour: self.auto_update_hour,
             show_banner: self.show_banner,
             github_token: SecretView::of(&self.github_token),
+            discord_enabled: self.discord_enabled,
+            discord_webhook_configured: !self.discord_webhook_url.is_empty(),
         }
     }
 }
 
-/// A settings change. A token left out (or `null`) stays as it is, an empty string removes it.
+/// A settings change. A secret left out (or `null`) stays as it is, an empty string removes it.
 #[derive(Deserialize)]
 pub struct Update {
     pub check_interval_hours: u32,
@@ -92,6 +120,12 @@ pub struct Update {
     pub show_banner: bool,
     #[serde(default)]
     pub github_token: Option<String>,
+    /// Omitted preserves the stored toggle (for backward compatibility with older callers).
+    #[serde(default)]
+    pub discord_enabled: Option<bool>,
+    /// Omitted or `null` keeps the stored webhook URL, an empty string clears it.
+    #[serde(default)]
+    pub discord_webhook_url: Option<String>,
 }
 
 impl Update {
@@ -109,6 +143,12 @@ impl Update {
                 errors.push("github_token must be a GitHub token (printable ASCII, at most 255 characters)".into());
             }
         }
+        if let Some(webhook) = &self.discord_webhook_url
+            && !webhook.trim().is_empty()
+            && let Err(err) = discord::validate_url(webhook)
+        {
+            errors.push(err.to_string());
+        }
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
@@ -120,6 +160,12 @@ impl Update {
         settings.show_banner = self.show_banner;
         if let Some(token) = self.github_token {
             settings.github_token = token.trim().to_string();
+        }
+        if let Some(enabled) = self.discord_enabled {
+            settings.discord_enabled = enabled;
+        }
+        if let Some(webhook) = self.discord_webhook_url {
+            settings.discord_webhook_url = webhook.trim().to_string();
         }
     }
 }
@@ -136,7 +182,10 @@ impl SettingsSerializeExt for Settings {
             .write_serde_setting("auto_update", &self.auto_update)?
             .write_serde_setting("auto_update_hour", &self.auto_update_hour)?
             .write_serde_setting("show_banner", &self.show_banner)?
+            .write_serde_setting("discord_enabled", &self.discord_enabled)?
             .write_raw_encrypted_setting("github_token", self.github_token.as_str())
+            .await?
+            .write_raw_encrypted_setting("discord_webhook_url", self.discord_webhook_url.as_str())
             .await?)
     }
 }
@@ -161,6 +210,13 @@ impl SettingsDeserializeExt for SettingsDataDeserializer {
             Ok(Some(token)) => token.to_string(),
             _ => String::new(),
         };
+        let discord_webhook_url = match deserializer
+            .read_raw_encrypted_setting("discord_webhook_url")
+            .await
+        {
+            Ok(Some(webhook)) => webhook.trim().to_string(),
+            _ => String::new(),
+        };
         Ok(Box::new(Settings {
             check_interval_hours: serde_or!("check_interval_hours", d.check_interval_hours),
             allow_prereleases: serde_or!("allow_prereleases", d.allow_prereleases),
@@ -168,6 +224,8 @@ impl SettingsDeserializeExt for SettingsDataDeserializer {
             auto_update_hour: serde_or!("auto_update_hour", d.auto_update_hour),
             show_banner: serde_or!("show_banner", d.show_banner),
             github_token,
+            discord_enabled: serde_or!("discord_enabled", d.discord_enabled),
+            discord_webhook_url,
         }))
     }
 }
@@ -192,13 +250,18 @@ mod tests {
             auto_update_hour: 3,
             show_banner: true,
             github_token: token.map(str::to_string),
+            discord_enabled: None,
+            discord_webhook_url: None,
         }
     }
+
+    const WEBHOOK: &str = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
 
     #[test]
     fn auto_update_is_off_by_default_and_the_token_is_masked() {
         let defaults = Settings::default();
         assert!(!defaults.auto_update);
+        assert!(!defaults.discord_enabled);
         let mut settings = Settings {
             github_token: "github_pat_0123456789abcdef".into(),
             ..defaults
@@ -223,5 +286,70 @@ mod tests {
             ..update(Some("has space"))
         };
         assert_eq!(wrong.validate().unwrap_err().len(), 3);
+
+        let bad_webhook = Update {
+            discord_webhook_url: Some("https://evil.example/api/webhooks/1/x".into()),
+            ..update(None)
+        };
+        assert_eq!(bad_webhook.validate().unwrap_err().len(), 1);
+    }
+
+    #[test]
+    fn the_webhook_is_write_only_and_kept_unless_cleared() {
+        let mut settings = Settings {
+            discord_webhook_url: WEBHOOK.into(),
+            ..Settings::default()
+        };
+        let view = settings.admin_view();
+        assert!(view.discord_webhook_configured);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["discord_webhook_configured"], true);
+        assert!(!json.to_string().contains("abcdefghijklmnop"));
+
+        // omitted keeps it
+        update(None).apply(&mut settings);
+        assert_eq!(settings.discord_webhook_url, WEBHOOK);
+        // legacy caller without discord_enabled keeps existing toggle
+        settings.discord_enabled = true;
+        update(None).apply(&mut settings);
+        assert!(settings.discord_enabled);
+        // explicit toggle overrides
+        Update {
+            discord_enabled: Some(false),
+            ..update(None)
+        }
+        .apply(&mut settings);
+        assert!(!settings.discord_enabled);
+
+        // trimmed when provided
+        Update {
+            discord_enabled: Some(true),
+            discord_webhook_url: Some(format!("  {WEBHOOK}  ")),
+            ..update(None)
+        }
+        .apply(&mut settings);
+        assert!(settings.discord_enabled);
+        assert_eq!(settings.discord_webhook_url, WEBHOOK);
+        // empty clears it
+        Update {
+            discord_webhook_url: Some(String::new()),
+            ..update(None)
+        }
+        .apply(&mut settings);
+        assert!(settings.discord_webhook_url.is_empty());
+        assert!(!settings.admin_view().discord_webhook_configured);
+    }
+
+    #[test]
+    fn debug_does_not_leak_webhook_url_or_token() {
+        let settings = Settings {
+            github_token: "ghp_supersecretkey123456789".into(),
+            discord_webhook_url: WEBHOOK.into(),
+            ..Settings::default()
+        };
+        let debug = format!("{settings:?}");
+        assert!(!debug.contains("supersecretkey"), "{debug}");
+        assert!(!debug.contains("abcdefghijklmnopqrstuvwxyz"), "{debug}");
+        assert!(debug.contains("discord_webhook_configured: true"), "{debug}");
     }
 }

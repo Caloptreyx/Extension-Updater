@@ -1,4 +1,4 @@
-import { faCheck, faExclamationTriangle, faKey, faPlug } from '@fortawesome/free-solid-svg-icons';
+import { faCheck, faExclamationTriangle, faKey, faLink, faPaperPlane, faPlug } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
@@ -19,8 +19,8 @@ import Text from '@/elements/typography/Text.tsx';
 import Title from '@/elements/typography/Title.tsx';
 import { useAdminCan } from '@/plugins/usePermissions.ts';
 import { useToast } from '@/providers/ToastProvider.tsx';
-import type { RateLimit, Settings, TokenTestResult } from '../lib/types.ts';
-import { getSettings, PACKAGE, testToken, updateSettings } from '../api.ts';
+import type { RateLimit, Settings, TokenTestResult, WebhookTestResult } from '../lib/types.ts';
+import { getSettings, PACKAGE, testDiscordWebhook, testToken, updateSettings } from '../api.ts';
 import { useExtTranslations } from '../translations.ts';
 
 export const settingsKey = [PACKAGE, 'settings'] as const;
@@ -54,6 +54,10 @@ export default function SettingsForm({ rateLimit: propRateLimit, timezone: propT
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [tokenTest, setTokenTest] = useState<TokenTestResult | null>(null);
+  const [webhook, setWebhook] = useState('');
+  const [removeWebhook, setRemoveWebhook] = useState(false);
+  const [testingWebhook, setTestingWebhook] = useState(false);
+  const [webhookTest, setWebhookTest] = useState<WebhookTestResult | null>(null);
 
   useEffect(() => {
     if (query.data?.settings) setForm(query.data.settings);
@@ -81,7 +85,12 @@ export default function SettingsForm({ rateLimit: propRateLimit, timezone: propT
       : t('settings.tokenStoredNoHint', {})
     : t('settings.tokenNone', {});
 
+  const webhookState = form.discord_webhook_configured
+    ? t('settings.discordWebhookConfigured', {})
+    : t('settings.discordWebhookNone', {});
+
   const canTestToken = canManage && (token.trim().length > 0 || (stored.set && !removeToken));
+  const canTestWebhook = canManage && !removeWebhook && (webhook.trim().length > 0 || form.discord_webhook_configured);
 
   const runTokenTest = async () => {
     setTesting(true);
@@ -100,10 +109,24 @@ export default function SettingsForm({ rateLimit: propRateLimit, timezone: propT
     }
   };
 
+  const runWebhookTest = async () => {
+    setTestingWebhook(true);
+    setWebhookTest(null);
+    try {
+      const provided = webhook.trim() || null;
+      await testDiscordWebhook(provided);
+      setWebhookTest({ valid: true, error: null });
+    } catch (error) {
+      setWebhookTest({ valid: false, error: httpErrorToHuman(error) });
+    } finally {
+      setTestingWebhook(false);
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
-      const saved = await updateSettings({
+      const payload: Parameters<typeof updateSettings>[0] = {
         check_interval_hours: form.check_interval_hours,
         allow_prereleases: form.allow_prereleases,
         auto_update: form.auto_update,
@@ -111,11 +134,21 @@ export default function SettingsForm({ rateLimit: propRateLimit, timezone: propT
         show_banner: form.show_banner,
         // "" removes the stored token, null keeps it
         github_token: removeToken ? '' : token.trim() || null,
-      });
+        discord_enabled: removeWebhook ? false : form.discord_enabled,
+      };
+      if (removeWebhook) {
+        payload.discord_webhook_url = '';
+      } else if (webhook.trim().length > 0) {
+        payload.discord_webhook_url = webhook.trim();
+      }
+      const saved = await updateSettings(payload);
       setForm(saved.settings);
       setToken('');
       setRemoveToken(false);
       setTokenTest(null);
+      setWebhook('');
+      setRemoveWebhook(false);
+      setWebhookTest(null);
       queryClient.setQueryData(settingsKey, saved);
       queryClient.invalidateQueries({ queryKey: [PACKAGE] });
       addToast(t('settings.saved', {}), 'success');
@@ -182,6 +215,71 @@ export default function SettingsForm({ rateLimit: propRateLimit, timezone: propT
           onChange={(event) => update({ show_banner: event.currentTarget.checked })}
           disabled={!canManage}
         />
+      </Stack>
+
+      <Divider />
+
+      <Stack gap='sm'>
+        <Title order={5}>{t('settings.sectionDiscord', {})}</Title>
+        <Switch
+          label={t('settings.discordEnabled', {})}
+          description={t('settings.discordEnabledDescription', {})}
+          checked={form.discord_enabled}
+          onChange={(event) => update({ discord_enabled: event.currentTarget.checked })}
+          disabled={!canManage || removeWebhook}
+        />
+
+        <div className='flex flex-col sm:flex-row sm:items-end gap-2'>
+          <div className='flex-1'>
+            <PasswordInput
+              label={t('settings.discordWebhookUrl', {})}
+              description={`${t('settings.discordWebhookDescription', {})} ${webhookState}`}
+              leftSection={<FontAwesomeIcon icon={faLink} />}
+              value={webhook}
+              onChange={(event) => {
+                setWebhook(event.currentTarget.value);
+                setWebhookTest(null);
+              }}
+              disabled={!canManage || removeWebhook}
+            />
+          </div>
+          {canManage && (
+            <Button
+              variant='default'
+              leftSection={<FontAwesomeIcon icon={faPaperPlane} />}
+              loading={testingWebhook}
+              disabled={!canTestWebhook}
+              onClick={runWebhookTest}
+            >
+              {t('settings.testDiscordWebhook', {})}
+            </Button>
+          )}
+        </div>
+
+        {webhookTest && (
+          <Alert
+            color={webhookTest.valid ? 'green' : 'red'}
+            icon={<FontAwesomeIcon icon={webhookTest.valid ? faCheck : faExclamationTriangle} />}
+          >
+            {webhookTest.valid ? t('settings.discordTestSuccess', {}) : webhookTest.error}
+          </Alert>
+        )}
+
+        {form.discord_webhook_configured && (
+          <Checkbox
+            label={t('settings.removeDiscordWebhook', {})}
+            checked={removeWebhook}
+            onChange={(event) => {
+              const checked = event.currentTarget.checked;
+              setRemoveWebhook(checked);
+              setWebhookTest(null);
+              if (checked) {
+                update({ discord_enabled: false });
+              }
+            }}
+            disabled={!canManage}
+          />
+        )}
       </Stack>
 
       <Divider />

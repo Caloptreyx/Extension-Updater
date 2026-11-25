@@ -3,6 +3,7 @@
 
 use crate::{
     catalog::{self, Listing, Release, ReleaseMeta, Repo, Status},
+    discord,
     github::{self, Github},
     panel::{self, PanelHost},
     pipeline::{self, ApplyError, Plan, Rebuild, Source},
@@ -14,6 +15,7 @@ use crate::{
 use chrono::{DateTime, Timelike, Utc};
 use semver::Version;
 use serde::Serialize;
+use sha2::Digest;
 use shared::{
     State,
     models::{
@@ -31,6 +33,7 @@ use tokio::sync::{Mutex, RwLock};
 const REPOS_KEY: &str = "repos";
 const LAST_CHECK_KEY: &str = "state:last-check";
 const LAST_AUTO_KEY: &str = "state:last-auto";
+const DISCORD_KNOWN_KEY: &str = "state:discord-known";
 /// How often the repository list is read again (one API request), and on "Check now".
 const REPOS_MAX_AGE_MINUTES: i64 = 24 * 60;
 const REPOS_MANUAL_MAX_AGE_MINUTES: i64 = 10;
@@ -231,7 +234,156 @@ pub async fn check(state: &State, mode: Mode) -> anyhow::Result<Arc<Snapshot>> {
         allow_prereleases: settings.allow_prereleases,
     });
     *SNAPSHOT.write().await = snapshot.clone();
+
+    if !offline && snapshot.errors.is_empty() {
+        if let Err(err) = notify_discord(state, &snapshot, &settings).await {
+            tracing::warn!("extension updater: discord notifications: {err:#}");
+        }
+    }
+
     Ok(snapshot)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DiscordNotification {
+    package_name: String,
+    extension_name: String,
+    version: String,
+    release_url: String,
+}
+
+#[derive(Default)]
+struct DiscordPlan {
+    send: Vec<DiscordNotification>,
+    next_known: BTreeMap<String, String>,
+}
+
+fn plan_discord_notifications(
+    entries: &[Entry],
+    known: &BTreeMap<String, String>,
+    seeded: bool,
+) -> DiscordPlan {
+    let mut next_known = known.clone();
+    let mut send = Vec::new();
+
+    for entry in entries {
+        if entry.installed.is_none() {
+            continue;
+        }
+        let current_target = match &entry.latest {
+            Some(latest) => latest.version.clone(),
+            None => match &entry.installed {
+                Some(inst) => inst.version.clone(),
+                None => continue,
+            },
+        };
+
+        if !seeded {
+            next_known.insert(entry.package_name.clone(), current_target);
+            continue;
+        }
+
+        let is_newer = match known.get(&entry.package_name) {
+            Some(known_ver_str) => match (Version::parse(&current_target), Version::parse(known_ver_str)) {
+                (Ok(target), Ok(known_ver)) => target > known_ver,
+                _ => &current_target != known_ver_str,
+            },
+            None => true,
+        };
+
+        if is_newer {
+            if entry.offers_update() && let Some(latest) = &entry.latest {
+                send.push(DiscordNotification {
+                    package_name: entry.package_name.clone(),
+                    extension_name: entry.name.clone(),
+                    version: latest.version.clone(),
+                    release_url: latest.html_url.clone(),
+                });
+            }
+            next_known.insert(entry.package_name.clone(), current_target);
+        }
+    }
+
+    DiscordPlan { send, next_known }
+}
+
+fn destination_fingerprint(settings: &Settings) -> Option<String> {
+    discord::configured(settings).map(|url| {
+        let digest: trust::Sha256 = sha2::Sha256::digest(url.as_str().as_bytes()).into();
+        hex::encode(digest)
+    })
+}
+
+async fn notify_discord(
+    state: &State,
+    snapshot: &Snapshot,
+    settings: &Settings,
+) -> anyhow::Result<()> {
+    let current_fingerprint = destination_fingerprint(settings);
+    let cached = store::cache_get(&state.database, DISCORD_KNOWN_KEY).await?;
+    let (seeded, known): (bool, BTreeMap<String, String>) = match cached {
+        Some(c) if c.fingerprint == current_fingerprint => (
+            true,
+            serde_json::from_str(&c.value).unwrap_or_default(),
+        ),
+        _ => (false, BTreeMap::new()),
+    };
+
+    let entries = entries(state, snapshot).await?;
+    let plan = plan_discord_notifications(&entries, &known, seeded);
+
+    if !seeded {
+        store::cache_put(
+            &state.database,
+            DISCORD_KNOWN_KEY,
+            None,
+            current_fingerprint.as_deref(),
+            &serde_json::to_string(&plan.next_known)?,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let mut to_persist = plan.next_known;
+
+    if let Some(webhook) = discord::configured(settings) {
+        let updates_url = discord::updates_page(state).await?;
+
+        for item in &plan.send {
+            let update = discord::Update {
+                extension: &item.extension_name,
+                version: &item.version,
+                release_url: &item.release_url,
+                updates_url: &updates_url,
+            };
+            if let Err(err) = discord::send_update(&webhook, &update).await {
+                tracing::warn!(
+                    "extension updater: failed sending discord card for {}: {err:#}",
+                    item.package_name
+                );
+                // Revert only failed candidate's known-version to original value (or remove if missing)
+                match known.get(&item.package_name) {
+                    Some(orig) => {
+                        to_persist.insert(item.package_name.clone(), orig.clone());
+                    }
+                    None => {
+                        to_persist.remove(&item.package_name);
+                    }
+                }
+            }
+        }
+    }
+
+    store::cache_put(
+        &state.database,
+        DISCORD_KNOWN_KEY,
+        None,
+        current_fingerprint.as_deref(),
+        &serde_json::to_string(&to_persist)?,
+    )
+    .await?;
+
+    Ok(())
 }
 
 async fn cached_releases(db: &shared::database::Database, repo: &str) -> Option<Vec<Release>> {
@@ -1232,6 +1384,11 @@ mod tests {
     }
 
     fn entry(name: &str, status: Status, updates_enabled: bool) -> Entry {
+        let latest = match status {
+            Status::UpdateAvailable => Some(release("1.1.0")),
+            Status::UpToDate => Some(release("1.0.0")),
+            _ => None,
+        };
         Entry {
             package_name: format!("dev.caloptreyx.{name}"),
             name: name.into(),
@@ -1244,7 +1401,7 @@ mod tests {
                 disabled: false,
             }),
             status,
-            latest: Some(release("1.1.0")),
+            latest,
             needs_panel: None,
             notes: Vec::new(),
             rollback: None,
@@ -1424,5 +1581,128 @@ mod tests {
 
         // Manual failed run -> not reported as failed auto run
         assert_eq!(last_failed_auto(&[make_run(2, false, RunState::Failed)]), None);
+    }
+
+    #[test]
+    fn discord_plan_step_seeds_installed_compatible_versions() {
+        let entries = vec![
+            entry("on", Status::UpdateAvailable, true),
+            entry("current", Status::UpToDate, true),
+            entry("off", Status::UpdateAvailable, false),
+            entry("new", Status::Installable, true),
+        ];
+        let known = BTreeMap::new();
+        let plan = plan_discord_notifications(&entries, &known, false);
+        assert!(plan.send.is_empty(), "first check must seed without sending");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.on").unwrap(), "1.1.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.current").unwrap(), "1.0.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.off").unwrap(), "1.1.0");
+        assert!(!plan.next_known.contains_key("dev.caloptreyx.new"));
+    }
+
+    #[test]
+    fn discord_plan_detects_new_compatible_version() {
+        let mut known = BTreeMap::new();
+        known.insert("dev.caloptreyx.on".into(), "1.0.0".into());
+        let entries = vec![entry("on", Status::UpdateAvailable, true)];
+        let plan = plan_discord_notifications(&entries, &known, true);
+        assert_eq!(plan.send.len(), 1);
+        assert_eq!(plan.send[0].package_name, "dev.caloptreyx.on");
+        assert_eq!(plan.send[0].version, "1.1.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.on").unwrap(), "1.1.0");
+    }
+
+    #[test]
+    fn discord_plan_skips_repeated_and_older_versions() {
+        let mut known = BTreeMap::new();
+        known.insert("dev.caloptreyx.on".into(), "1.1.0".into());
+        let entries = vec![entry("on", Status::UpdateAvailable, true)];
+        let plan = plan_discord_notifications(&entries, &known, true);
+        assert!(plan.send.is_empty(), "same version must not re-notify");
+
+        known.insert("dev.caloptreyx.on".into(), "2.0.0".into());
+        let plan_older = plan_discord_notifications(&entries, &known, true);
+        assert!(plan_older.send.is_empty(), "older version must not re-notify");
+        assert_eq!(plan_older.next_known.get("dev.caloptreyx.on").unwrap(), "2.0.0");
+    }
+
+    #[test]
+    fn discord_plan_skips_ineligible_entries_and_preserves_missing() {
+        let mut known = BTreeMap::new();
+        known.insert("dev.caloptreyx.on".into(), "1.0.0".into());
+        known.insert("dev.caloptreyx.missing".into(), "0.9.0".into());
+        let mut needs_panel = entry("panel", Status::NeedsPanel, true);
+        needs_panel.latest = None;
+        needs_panel.needs_panel = Some(release("2.0.0"));
+        let entries = vec![
+            entry("new", Status::Installable, true),
+            needs_panel,
+        ];
+        let plan = plan_discord_notifications(&entries, &known, true);
+        assert!(plan.send.is_empty());
+        assert_eq!(plan.next_known.get("dev.caloptreyx.missing").unwrap(), "0.9.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.on").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn discord_plan_respects_updates_off_and_skipped_version() {
+        let mut known = BTreeMap::new();
+        known.insert("dev.caloptreyx.off".into(), "1.0.0".into());
+        known.insert("dev.caloptreyx.skipped".into(), "1.0.0".into());
+        let mut skipped = entry("skipped", Status::UpdateAvailable, true);
+        skipped.skipped_version = Some("1.1.0".into());
+        let entries = vec![
+            entry("off", Status::UpdateAvailable, false),
+            skipped,
+        ];
+        let plan = plan_discord_notifications(&entries, &known, true);
+        assert!(plan.send.is_empty(), "paused and skipped extensions must not emit notifications");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.off").unwrap(), "1.1.0");
+        assert_eq!(plan.next_known.get("dev.caloptreyx.skipped").unwrap(), "1.1.0");
+    }
+
+    #[test]
+    fn destination_fingerprint_hashes_destination_and_handles_disabled() {
+        let mut settings = Settings {
+            discord_enabled: false,
+            discord_webhook_url: "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_".into(),
+            ..Settings::default()
+        };
+        assert_eq!(destination_fingerprint(&settings), None);
+
+        settings.discord_enabled = true;
+        let fp1 = destination_fingerprint(&settings);
+        assert!(fp1.is_some());
+
+        // changing URL changes fingerprint
+        settings.discord_webhook_url = "https://discord.com/api/webhooks/987654321098765432/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_".into();
+        let fp2 = destination_fingerprint(&settings);
+        assert!(fp2.is_some());
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn failed_delivery_reverts_known_candidate_while_retaining_others() {
+        let mut known: BTreeMap<String, String> = BTreeMap::new();
+        known.insert("dev.caloptreyx.succeeded".into(), "1.0.0".into());
+        known.insert("dev.caloptreyx.failed".into(), "1.0.0".into());
+        // plan would advance both to 1.1.0
+        let mut to_persist: BTreeMap<String, String> = BTreeMap::new();
+        to_persist.insert("dev.caloptreyx.succeeded".into(), "1.1.0".into());
+        to_persist.insert("dev.caloptreyx.failed".into(), "1.1.0".into());
+
+        // simulate failure of "dev.caloptreyx.failed"
+        let failed_item = "dev.caloptreyx.failed";
+        match known.get(failed_item) {
+            Some(orig) => {
+                to_persist.insert(failed_item.to_string(), orig.clone());
+            }
+            None => {
+                to_persist.remove(failed_item);
+            }
+        }
+
+        assert_eq!(to_persist.get("dev.caloptreyx.succeeded").unwrap(), "1.1.0");
+        assert_eq!(to_persist.get("dev.caloptreyx.failed").unwrap(), "1.0.0");
     }
 }

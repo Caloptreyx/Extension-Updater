@@ -10,6 +10,7 @@ use shared::{
 use std::sync::Arc;
 
 pub mod catalog;
+pub mod discord;
 pub mod github;
 pub mod panel;
 pub mod pipeline;

@@ -3,6 +3,7 @@
 //! on or off and changing settings need `extensions.manage`, like the panel's own extension upload.
 
 use crate::{
+    discord,
     github,
     settings::{self, Settings, Update},
     updater::{self, Actor, Mode, RunError, Wanted},
@@ -182,6 +183,46 @@ async fn test_token(
     respond(updater::test_token(&state, data.github_token.as_deref()).await)
 }
 
+#[derive(Deserialize)]
+struct TestWebhookRequest {
+    /// A draft URL to try, or `null`/empty to try the stored one.
+    #[serde(default)]
+    webhook_url: Option<String>,
+}
+
+/// Sends a test card to a draft webhook URL or the stored one. Saves nothing and touches no
+/// update-detection state, so a test cannot suppress or replay a notification.
+async fn test_discord_webhook(
+    state: GetState,
+    permissions: GetPermissionManager,
+    Payload(data): Payload<TestWebhookRequest>,
+) -> ApiResponseResult {
+    permissions.has_admin_permission("extensions.manage")?;
+    let raw = match data.webhook_url.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => raw.to_string(),
+        _ => settings::load(&state).await?.discord_webhook_url,
+    };
+    if raw.is_empty() {
+        return ApiResponse::error("no Discord webhook URL is configured".to_string())
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok();
+    }
+    let webhook = match discord::validate_url(&raw) {
+        Ok(webhook) => webhook,
+        Err(err) => {
+            return ApiResponse::error(err.to_string())
+                .with_status(StatusCode::BAD_REQUEST)
+                .ok();
+        }
+    };
+    match discord::send_test(&webhook).await {
+        Ok(()) => ApiResponse::new_serialized(json!({ "ok": true })).ok(),
+        Err(err) => ApiResponse::error(err.to_string())
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok(),
+    }
+}
+
 async fn get_settings(state: GetState, permissions: GetPermissionManager) -> ApiResponseResult {
     permissions.has_admin_permission("extensions.read")?;
     let settings = settings::load(&state).await?;
@@ -206,9 +247,22 @@ async fn put_settings(
             .ok();
     }
     let token_changed = data.github_token.is_some();
+    let webhook_changed = data.discord_webhook_url.is_some();
     let view = {
         let mut panel_settings = state.settings.get_mut().await?;
         let stored: &mut Settings = panel_settings.get_mut_extension_settings(crate::PACKAGE)?;
+        let effective_enabled = data.discord_enabled.unwrap_or(stored.discord_enabled);
+        let effective_empty = match data.discord_webhook_url.as_deref().map(str::trim) {
+            Some(url) => url.is_empty(),
+            None => stored.discord_webhook_url.trim().is_empty(),
+        };
+        if effective_enabled && effective_empty {
+            return ApiResponse::new_serialized(ApiError::new_strings_value(vec![
+                "discord_enabled requires a Discord webhook URL".into(),
+            ]))
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok();
+        }
         data.apply(stored);
         let view = stored.admin_view();
         panel_settings.save().await?;
@@ -226,6 +280,8 @@ async fn put_settings(
                     "auto_update_hour": view.auto_update_hour,
                     "show_banner": view.show_banner,
                     "github_token_changed": token_changed,
+                    "discord_enabled": view.discord_enabled,
+                    "discord_webhook_changed": webhook_changed,
                 },
             }),
         )
@@ -248,6 +304,7 @@ pub fn router(state: &State) -> OpenApiRouter<State> {
         .route("/updates", put(set_updates))
         .route("/skip", put(set_skip))
         .route("/test-token", post(test_token))
+        .route("/test-discord-webhook", post(test_discord_webhook))
         .route("/settings", get(get_settings).put(put_settings))
         .with_state(state.clone())
 }

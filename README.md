@@ -140,8 +140,15 @@ The updater is one of the packages: it updates itself like any other extension.
 | Auto-update hour | 4 | 0 to 23, panel time zone |
 | Show banner | on | Banner on admin pages |
 | GitHub token | none | Stored encrypted, shown masked; empty removes it |
+| Discord notifications | off | Optional Discord channel webhook |
 
 For the token, use a fine-grained token with public repository read access only.
+
+In **Extension Updates → Settings → Discord notifications**, add a Discord channel webhook and
+use **Send test message** to verify it before saving. Notifications work with auto-update off.
+After the initial check establishes a baseline, newly detected compatible updates for installed
+extensions get a Discord card. **View release** opens GitHub; **Update** opens the panel page
+without installing anything. Already known updates are not sent when notifications are enabled.
 
 ## Permissions
 

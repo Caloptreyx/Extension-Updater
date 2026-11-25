@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Optional Discord Components V2 notifications for new extension updates.
+- Fixed scrolling for long release notes in the update confirmation dialog.
+- Render GitHub Markdown alerts in release notes.
+
 ## 0.2.0
 
 - Tabbed **Extension Updates** page (**Installed**, **Available**, **History**, **Settings**) with

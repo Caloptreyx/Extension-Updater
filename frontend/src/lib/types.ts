@@ -120,6 +120,8 @@ export interface Settings {
   auto_update_hour: number;
   show_banner: boolean;
   github_token: { set: boolean; hint: string | null };
+  discord_enabled: boolean;
+  discord_webhook_configured: boolean;
 }
 
 export interface SettingsResponse {
@@ -136,6 +138,14 @@ export interface SettingsUpdate {
   show_banner: boolean;
   /** Omitted or null keeps the stored token, "" removes it. */
   github_token?: string | null;
+  discord_enabled: boolean;
+  /** Omitted or null keeps the stored webhook URL, "" removes it. */
+  discord_webhook_url?: string | null;
+}
+
+export interface WebhookTestResult {
+  valid: boolean;
+  error: string | null;
 }
 
 export interface RateLimit {
