@@ -26,6 +26,20 @@ Package name: `dev.caloptreyx.updater` · Requires panel `>=1.2.10`
 - **Notices**: live building status, failed auto-update alerts, and update availability on admin
   pages and Admin › Updates.
 
+## Screenshots
+
+**Extension Updates**: installed Caloptreyx extensions, update status, and one-click update or check actions.
+
+![Extension Updates page](docs/screenshots/updates.png)
+
+**Updates & rollback**: available updates with release notes and one-click rollback to the previous version.
+
+![Available update and rollback controls](docs/screenshots/update-available.png)
+
+**Admin banner & settings**: update notice shown on admin pages alongside schedule, auto-update, and GitHub token settings.
+
+![Extension Updater admin settings](docs/screenshots/admin-settings.png)
+
 ## Requirements
 
 Installing needs the heavy image (`ghcr.io/calagopus/panel:heavy`): its supervisor builds the
